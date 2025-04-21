@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 # from visualization import plot_img_and_mask,plot_one_box,show_seg_result
 from pathlib import Path
 from PIL import Image
+from fontTools.ttLib.tables.C_P_A_L_ import table_C_P_A_L_
 from torch.utils.data import Dataset
 from ..utils import letterbox, augment_hsv, random_perspective, xyxy2xywh, cutout
 import albumentations as A
@@ -44,7 +45,10 @@ class AutoDriveDataset(Dataset):
         self.inputsize = inputsize
         self.Tensor = transforms.ToTensor()
         #路径
-        img_root = Path(cfg.DATASET.DATAROOT)
+        img_root1 = Path(cfg.DATASET.DATAROOT1)
+        img_root2 = Path(cfg.DATASET.DATAROOT2)
+        img_root3 = Path(cfg.DATASET.DATAROOT3)
+
         label_root = Path(cfg.DATASET.LABELROOT)
         mask_root = Path(cfg.DATASET.MASKROOT)
         lane_root = Path(cfg.DATASET.LANEROOT)
@@ -55,13 +59,19 @@ class AutoDriveDataset(Dataset):
             indicator = cfg.DATASET.TEST_SET
 
         #路径拼接
-        self.img_root = img_root / indicator
+        self.img_root1 = img_root1 / indicator
+        self.img_root2 = img_root2 / indicator
+        self.img_root3 = img_root3 / indicator
+
         self.label_root = label_root / indicator
         self.mask_root = mask_root / indicator
         self.lane_root = lane_root / indicator
 
         # self.label_list = self.label_root.iterdir()
-        self.mask_list = self.mask_root.iterdir()
+        # self.mask_list = self.mask_root.iterdir()
+        self.det_list = list(self.label_root.glob("*.json")) if self.label_root.exists() else []
+        self.seg_list = list(self.mask_root.glob("*.png")) if self.mask_root.exists() else []
+        self.lane_list = list(self.lane_root.glob("*.png")) if self.lane_root.exists() else []
 
         # albumentation data arguments
         self.albumentations_transform = A.Compose([
@@ -171,21 +181,21 @@ class AutoDriveDataset(Dataset):
                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-
-            seg4[y1a:y2a, x1a:x2a] = seg_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-                
-            lane4[y1a:y2a, x1a:x2a] = lane_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            if self.db[idx]["tape"]=='seg':
+                seg4[y1a:y2a, x1a:x2a] = seg_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            if self.db[idx]["tape"] == 'depth':
+                lane4[y1a:y2a, x1a:x2a] = lane_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
 
             padw = x1a - x1b
             padh = y1a - y1b
-            
-            if len(labels):
-                labels[:, 1] += padw
-                labels[:, 2] += padh
-                labels[:, 3] += padw
-                labels[:, 4] += padh
-            
-                labels4.append(labels)
+            if self.db[idx]["tape"] == 'detect':
+                if len(labels):
+                    labels[:, 1] += padw
+                    labels[:, 2] += padh
+                    labels[:, 3] += padw
+                    labels[:, 4] += padh
+
+                    labels4.append(labels)
 
         # Concat/clip labels
         labels4 = np.concatenate(labels4, 0)
@@ -218,44 +228,104 @@ class AutoDriveDataset(Dataset):
             raise FileNotFoundError(f"❌ 图像读取失败：{data['image']}")
 
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # seg_label = cv2.imread(data["mask"], 0)
 
-        #default==2 如果class==3 读取彩色mask
-        if self.cfg.num_seg_class == 3:
-            seg_label = cv2.imread(data["mask"])
-        else:
-            seg_label = cv2.imread(data["mask"], 0)
+        # 根据配置文件判断任务类型
+        # 加载目标检测标签 (如果存在)
+        det_label = None
+        if "label" in data and data["label"] is not None:
+            det_label = data["label"]
+            det_label = np.array(det_label)  # 确保标签是数组格式
 
-        lane_label = cv2.imread(data["lane"], 0)
+        # 加载分割标签 (如果存在)
+        seg_label = None
+        if "mask" in data and data["mask"] is not None:
+            if self.cfg.num_seg_class == 3:
+                seg_label = cv2.imread(data["mask"])  # 读取彩色分割标签
+            else:
+                seg_label = cv2.imread(data["mask"], 0)  # 读取单通道分割标签
 
+        # 加载车道线标签 (如果存在)
+        lane_label = None
+        if "lane" in data and data["lane"] is not None:
+            lane_label = cv2.imread(data["lane"], 0)  # 读取车道线标签
+
+        # 图像大小和目标大小调整
         resized_shape = self.inputsize
         if isinstance(resized_shape, list):
             resized_shape = max(resized_shape)
-        h0, w0 = img.shape[:2]  # orig hw
-        r = resized_shape / max(h0, w0)  # resize image to img_size
+        h0, w0 = img.shape[:2]  # 原始高宽
+        r = resized_shape / max(h0, w0)  # 计算缩放比例
 
-
-        if r != 1:  # always resize down, only resize up if training with augmentation
+        if r != 1:  # 如果缩放比例不是1，进行调整
             interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
-            seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
-            lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
-        h, w = img.shape[:2]
-       
-        det_label = data["label"]
-        labels=[]
+            if seg_label is not None:
+                seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+            if lane_label is not None:
+                lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
 
-        #将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
-        if det_label.size > 0:
-            # Normalized xywh to pixel xyxy format
+        h, w = img.shape[:2]  # 更新后的高度和宽度
+
+        # 目标检测标签：将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
+        labels = []
+        if det_label is not None and det_label.size > 0:
             labels = det_label.copy()
-
             labels[:, 1] = (det_label[:, 1] - det_label[:, 3] / 2) * w
-            labels[:, 2] = (det_label[:, 2] - det_label[:, 4] / 2) * h 
+            labels[:, 2] = (det_label[:, 2] - det_label[:, 4] / 2) * h
             labels[:, 3] = (det_label[:, 1] + det_label[:, 3] / 2) * w
             labels[:, 4] = (det_label[:, 2] + det_label[:, 4] / 2) * h
-        
-        return img, labels, seg_label, lane_label, (h0, w0), (h,w), data['image']
+
+        # 返回图像和标签
+        return img, labels, seg_label, lane_label, (h0, w0), (h, w), data['image']
+
+    # def load_image(self, idx):
+    #     data = self.db[idx]
+    #     img = cv2.imread(data["image"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    #     if img is None:
+    #         raise FileNotFoundError(f"❌ 图像读取失败：{data['image']}")
+    #
+    #     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    #     # seg_label = cv2.imread(data["mask"], 0)
+    #
+    #     #default==2 如果class==3 读取彩色mask
+    #
+    #
+    #
+    #     if self.cfg.num_seg_class == 3:
+    #         seg_label = cv2.imread(data["mask"])
+    #     else:
+    #         seg_label = cv2.imread(data["mask"], 0)
+    #
+    #     lane_label = cv2.imread(data["lane"], 0)
+    #
+    #     resized_shape = self.inputsize
+    #     if isinstance(resized_shape, list):
+    #         resized_shape = max(resized_shape)
+    #     h0, w0 = img.shape[:2]  # orig hw
+    #     r = resized_shape / max(h0, w0)  # resize image to img_size
+    #
+    #
+    #     if r != 1:  # always resize down, only resize up if training with augmentation
+    #         interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
+    #         img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+    #         seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+    #         lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+    #     h, w = img.shape[:2]
+    #
+    #     det_label = data["label"]
+    #     labels=[]
+    #
+    #     #将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
+    #     if det_label.size > 0:
+    #         # Normalized xywh to pixel xyxy format
+    #         labels = det_label.copy()
+    #
+    #         labels[:, 1] = (det_label[:, 1] - det_label[:, 3] / 2) * w
+    #         labels[:, 2] = (det_label[:, 2] - det_label[:, 4] / 2) * h
+    #         labels[:, 3] = (det_label[:, 1] + det_label[:, 3] / 2) * w
+    #         labels[:, 4] = (det_label[:, 2] + det_label[:, 4] / 2) * h
+    #
+    #     return img, labels, seg_label, lane_label, (h0, w0), (h,w), data['image']
 
     def __getitem__(self, idx):
         """
@@ -274,7 +344,9 @@ class AutoDriveDataset(Dataset):
         cv2.imread
         cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
         cv2.warpAffine
-        """ 
+        """
+
+        data = self.db[idx]
         if self.is_train:
             mosaic_this = False
             if random.random() < self.mosaic_rate:
@@ -290,29 +362,29 @@ class AutoDriveDataset(Dataset):
             else:
                 img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
 
-            try:
-                new = self.albumentations_transform(image=img, mask=seg_label, mask0=lane_label,
-                                                    bboxes=labels[:, 1:] if len(labels) else labels,
-                                                    class_labels=labels[:, 0] if len(labels) else labels)
-                img = new['image']
-                labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(labels) else labels
-                seg_label = new['mask']
-                lane_label = new['mask0']
-            except ValueError:  # bbox have width or height == 0
-                pass
+            # try:
+            #     new = self.albumentations_transform(image=img, mask=seg_label, mask0=lane_label,
+            #                                         bboxes=labels[:, 1:] if len(labels) else labels,
+            #                                         class_labels=labels[:, 0] if len(labels) else labels)
+            #     img = new['image']
+            #     labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(labels) else labels
+            #     seg_label = new['mask']
+            #     lane_label = new['mask0']
+            # except ValueError:  # bbox have width or height == 0
+            #     pass
 
-            combination = (img, seg_label, lane_label)
-            (img, seg_label, lane_label), labels = random_perspective(
-                combination=combination,
-                targets=labels,
-                degrees=self.cfg.DATASET.ROT_FACTOR,
-                translate=self.cfg.DATASET.TRANSLATE,
-                scale=self.cfg.DATASET.SCALE_FACTOR,
-                shear=self.cfg.DATASET.SHEAR,
-                border=self.mosaic_border if mosaic_this else (0, 0)
-            )
-
-            augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
+            # combination = (img, seg_label, lane_label)
+            # (img, seg_label, lane_label), labels = random_perspective(
+            #     combination=combination,
+            #     targets=labels,
+            #     degrees=self.cfg.DATASET.ROT_FACTOR,
+            #     translate=self.cfg.DATASET.TRANSLATE,
+            #     scale=self.cfg.DATASET.SCALE_FACTOR,
+            #     shear=self.cfg.DATASET.SHEAR,
+            #     border=self.mosaic_border if mosaic_this else (0, 0)
+            # )
+            #
+            # augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
 
             # random left-right flip
             if random.random() < 0.5:
@@ -325,9 +397,11 @@ class AutoDriveDataset(Dataset):
                     x_tmp = x1.copy()
                     labels[:, 1] = cols - x2
                     labels[:, 3] = cols - x_tmp
-                
-                seg_label = np.fliplr(seg_label)
-                lane_label = np.fliplr(lane_label)
+
+                if data['tape']=='seg':
+                    seg_label = np.fliplr(seg_label)
+                if data['tape'] == 'depth':
+                    lane_label = np.fliplr(lane_label)
 
             # random up-down flip
             if random.random() < 0.0:
@@ -340,62 +414,72 @@ class AutoDriveDataset(Dataset):
                     y_tmp = y1.copy()
                     labels[:, 2] = rows - y2
                     labels[:, 4] = rows - y_tmp
+                if data['tape'] == 'seg':
+                    seg_label = np.flipud(seg_label)
+                if data['tape'] == 'depth':
+                    lane_label = np.flipud(lane_label)
 
-                seg_label = np.flipud(seg_label)
-                lane_label = np.flipud(lane_label)
-        
         else:
             img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
         
         (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)
         shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
-        if len(labels):
-            # update labels after letterbox
-            labels[:, 1] = ratio[0] * labels[:, 1] + pad[0]
-            labels[:, 2] = ratio[1] * labels[:, 2] + pad[1]
-            labels[:, 3] = ratio[0] * labels[:, 3] + pad[0]
-            labels[:, 4] = ratio[1] * labels[:, 4] + pad[1]     
-
-            # convert xyxy to ( cx, cy, w, h )
-            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
-
         labels_out = torch.zeros((len(labels), 5))
-        if len(labels):
-            labels_out[:, :] = torch.from_numpy(labels)
+        if data['tape']== 'detect':
+            if len(labels):
+                # update labels after letterbox
+                labels[:, 1] = ratio[0] * labels[:, 1] + pad[0]
+                labels[:, 2] = ratio[1] * labels[:, 2] + pad[1]
+                labels[:, 3] = ratio[0] * labels[:, 3] + pad[0]
+                labels[:, 4] = ratio[1] * labels[:, 4] + pad[1]
+
+                # convert xyxy to ( cx, cy, w, h )
+                labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
+
+            labels_out = torch.zeros((len(labels), 5))
+            if len(labels):
+                labels_out[:, :] = torch.from_numpy(labels)
 
         img = np.ascontiguousarray(img)
+        if data['tape'] == 'seg':
+            if self.cfg.num_seg_class == 3:
+                _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
+                _,seg1 = cv2.threshold(seg_label[:,:,1],1,255,cv2.THRESH_BINARY)
+                _,seg2 = cv2.threshold(seg_label[:,:,2],1,255,cv2.THRESH_BINARY)
+            else:
+                _,seg1 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY)
+                _,seg2 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY_INV)
 
-        if self.cfg.num_seg_class == 3:
-            _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
-            _,seg1 = cv2.threshold(seg_label[:,:,1],1,255,cv2.THRESH_BINARY)
-            _,seg2 = cv2.threshold(seg_label[:,:,2],1,255,cv2.THRESH_BINARY)
-        else:
-            _,seg1 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY)
-            _,seg2 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY_INV)
-        _,lane1 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY)
-        _,lane2 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY_INV)
 
-        if self.cfg.num_seg_class == 3:
-            seg0 = self.Tensor(seg0)
-        seg1 = self.Tensor(seg1)
-        seg2 = self.Tensor(seg2)
+            if self.cfg.num_seg_class == 3:
+                seg0 = self.Tensor(seg0)
 
-        lane1 = self.Tensor(lane1)
-        lane2 = self.Tensor(lane2)
+            seg1 = self.Tensor(seg1)
+            seg2 = self.Tensor(seg2)
 
-        if self.cfg.num_seg_class == 3:
-            seg_label = torch.stack((seg0[0],seg1[0],seg2[0]),0)
-        else:
-            seg_label = torch.stack((seg2[0], seg1[0]),0)
-            
-        lane_label = torch.stack((lane2[0], lane1[0]),0)
+            if self.cfg.num_seg_class == 3:
+                seg_label = torch.stack((seg0[0], seg1[0], seg2[0]), 0)
+            else:
+                seg_label = torch.stack((seg2[0], seg1[0]), 0)
+
+        if data['tape'] == 'depth':
+
+            _,lane1 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY)
+            _,lane2 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY_INV)
+            lane1 = self.Tensor(lane1)
+            lane2 = self.Tensor(lane2)
+            lane_label = torch.stack((lane2[0], lane1[0]),0)
+
 
         target = [labels_out, seg_label, lane_label]
+
         img = self.transform(img)
 
+        task =data['tape']
+
         #1
-        return img, target, path, shapes
+        return img, target, path, shapes,task
 
     def select_data(self, db):
         """
@@ -410,19 +494,87 @@ class AutoDriveDataset(Dataset):
         db_selected = ...
         return db_selected
 
+
+    # def collate_fn(batch):
+    #     img, label, paths, shapes= zip(*batch)
+    #     label_det, label_seg, label_lane = [], [], []
+    #     for i, l in enumerate(label):
+    #         l_det, l_seg, l_lane = l
+    #         # l_det[:, 0] = i  # add target image index for build_targets()
+    #         label_det.append(l_det)
+    #         label_seg.append(l_seg)
+    #         label_lane.append(l_lane)
+    #
+    #     label_det = pad_sequence(label_det, batch_first = True, padding_value = 0)
+    #
+    #     return torch.stack(img, 0), [label_det, torch.stack(label_seg, 0), torch.stack(label_lane, 0)], paths, shapes
+
+    from torch.nn.utils.rnn import pad_sequence
     @staticmethod
     def collate_fn(batch):
-        img, label, paths, shapes= zip(*batch)
-        label_det, label_seg, label_lane = [], [], []
+        img, label, paths, shapes,task = zip(*batch)
+        print("coffate_fn 批次打包",task)
+        task = task [0]
+
+
+
+
+        label_det, label_seg, label_depth = [], [], []
+        has_det, has_seg, has_lane = False, False, False
+
         for i, l in enumerate(label):
-            l_det, l_seg, l_lane = l
-            # l_det[:, 0] = i  # add target image index for build_targets()
-            label_det.append(l_det)
-            label_seg.append(l_seg)
-            label_lane.append(l_lane)
+            l_det, l_seg, l_depth = l
 
-        label_det = pad_sequence(label_det, batch_first = True, padding_value = 0)
+            if l_det is not None:
+                label_det.append(l_det)
+                has_det = True
+            else:
+                label_det.append(None)  # 占位
 
-        return torch.stack(img, 0), [label_det, torch.stack(label_seg, 0), torch.stack(label_lane, 0)], paths, shapes
+            if l_seg is not None:
+                label_seg.append(l_seg)
+                has_seg = True
+            else:
+                # 填充全0张图（C, H, W），你可以自定义 H, W，比如 160x320
+                #label_seg.append(torch.zeros((2, 160, 320)))  # 假设2类语义分割
+                label_seg.append(None)
+
+            if l_depth is not None:
+                label_depth.append(l_depth)
+                has_lane = True
+            else:
+                #label_lane.append(torch.zeros((2, 160, 320)))
+                label_depth.append(None)# 假设2类车道线分割
+
+            # if not label_det and not label_seg and not label_depth:
+            #     print("读取错误===============", l_det, l_seg, l_depth)
+
+        img = torch.stack(img, 0)
+
+        task = task[0] if isinstance(task, list) else task
+        if task == 'detect':
+            label_det = pad_sequence(label_det, batch_first=True, padding_value=0)
+        else:
+            label_det = None
+
+        if  task == 'seg' :
+            label_seg = torch.stack(label_seg, 0)
+        else:
+            label_seg = None
+
+        if  task == 'depth' :
+            label_depth = torch.stack(label_depth, 0)
+        else:
+            label_depth = None
+
+        if (label_det is None or label_det.numel() == 0) and \
+                (label_seg is None or label_seg.numel() == 0) and \
+                (label_depth is None or label_depth.numel() == 0):
+            print("读取错误===============", label_det, label_seg, label_depth)
+
+        #return img, [label_det, label_seg, label_lane], paths, shapes ,task
+
+        return img, [label_det, label_seg, label_depth], paths, shapes, task
+
 
 

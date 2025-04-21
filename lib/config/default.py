@@ -12,6 +12,7 @@ _C.PRINT_FREQ = 2150
 _C.AUTO_RESUME =False       # Resume from the last training interrupt
 _C.NEED_AUTOANCHOR = False      # Re-select the prior anchor(k-means)    When training from scratch (epoch=0), set it to be ture!
 _C.DEBUG = False
+
 _C.num_seg_class = 2
 
 # Cudnn related params
@@ -55,10 +56,13 @@ _C.LOSS.LL_IOU_GAIN = 0.2 # lane line iou loss gain
 
 # DATASET related params
 _C.DATASET = CN(new_allowed=True)
-_C.DATASET.DATAROOT = 'D:/pyt37/bdd100k_images_100k/100k'       # the path of images folder
-_C.DATASET.LABELROOT = 'D:/pyt37/bdd100k_labels/100k'      # the path of det_annotations folder
-_C.DATASET.MASKROOT = 'D:/pyt37/bdd100k_seg_maps/labels'                # the path of da_seg_annotations folder
-_C.DATASET.LANEROOT = 'D:/pyt37/bdd100k_drivable_maps/labels'
+# _C.DATASET.DATAROOT = 'D:/pyt37/bdd100k_images_100k/100k'       # the path of images folder
+_C.DATASET.DATAROOT1 = 'D:/pyt37/detect/100k/image'
+_C.DATASET.DATAROOT2 = 'D:/pyt37/seg/100k/image'
+_C.DATASET.DATAROOT3 = 'D:/pyt37/depth/100k/image'
+_C.DATASET.LABELROOT = 'D:/pyt37/detect/100k/label'      # the path of det_annotations folder
+_C.DATASET.MASKROOT = 'D:/pyt37/seg/100k/gt'                # the path of da_seg_annotations folder
+_C.DATASET.LANEROOT = 'D:/pyt37/depth/100k/gt'
 # _C.DATASET.DATAROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd100k/images/100k'       # the path of images folder
 # _C.DATASET.LABELROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd100k/labels/100k'      # the path of det_annotations folder
 # _C.DATASET.MASKROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd_seg_gt'                # the path of da_seg_annotations folder
@@ -76,6 +80,7 @@ _C.DATASET.SCALE_FACTOR = 0.25
 _C.DATASET.ROT_FACTOR = 10
 _C.DATASET.TRANSLATE = 0.1
 _C.DATASET.SHEAR = 0.0
+
 _C.DATASET.COLOR_RGB = False
 _C.DATASET.HSV_H = 0.015  # image HSV-Hue augmentation (fraction)
 _C.DATASET.HSV_S = 0.7  # image HSV-Saturation augmentation (fraction)
@@ -101,7 +106,7 @@ _C.TRAIN.BEGIN_EPOCH = 0
 _C.TRAIN.END_EPOCH = 200
 
 _C.TRAIN.VAL_FREQ = 20
-_C.TRAIN.BATCH_SIZE_PER_GPU = 1#32
+_C.TRAIN.BATCH_SIZE_PER_GPU = 4#32
 _C.TRAIN.SHUFFLE = True
 
 _C.TRAIN.IOU_THRESHOLD = 0.2
@@ -126,7 +131,7 @@ _C.TRAIN.PLOT = False                #
 
 # testing
 _C.TEST = CN(new_allowed=True)
-_C.TEST.BATCH_SIZE_PER_GPU = 32
+_C.TEST.BATCH_SIZE_PER_GPU = 4#32
 _C.TEST.MODEL_FILE = ''
 _C.TEST.SAVE_JSON = False
 _C.TEST.SAVE_TXT = False

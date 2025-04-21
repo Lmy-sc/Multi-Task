@@ -128,14 +128,21 @@ class MCnet(nn.Module):
         # 27 
         self.det_out_idx = block_cfg[0][0]
 
+
         # 63 67
-        self.seg_out_idx = block_cfg[0][1:]
-        
+        #self.seg_out_idx = block_cfg[0][1:]
+        self.seg_out_idx = block_cfg[0][1]
+
+        self.depth_out_idx = block_cfg[0][2]
+
+        self.det_idx = block_cfg[0][0]
+
         # Build model
         # e.g. [ -1, Focus, [3, 32, 3]],   #0
         # i从0开始编号，from_ = -1，block = Focus，args = [3, 32, 3]
         # 注意，block是类，不是str
         for i, (from_, block, args) in enumerate(block_cfg[1:]):
+            #print(i,(from_, block, args))
             block = eval(block) if isinstance(block, str) else block  # eval strings
             if block is YOLOXHead:
                 # detector_index  # 27
@@ -153,10 +160,12 @@ class MCnet(nn.Module):
 
             # [ 6, 4, 14, 10, 23, 17, 20, 23, 25, 26, 26, 25, 23, 20, 17, 2, 37, 45, 51, 55, 57, 58, 59, 59 ]
             save.extend(x % i for x in ([from_] if isinstance(from_, int) else from_) if x != -1)  # append to savelist
+            #print("save",save)
         assert self.detector_index == block_cfg[0][0]
 
         self.model, self.save = nn.Sequential(*layers), sorted(save)
         self.names = [str(i) for i in range(self.nc)]
+        #print(self.names)
 
         # set stride、anchor for detector
         Detector = self.model[self.detector_index]  # detector
@@ -165,38 +174,121 @@ class MCnet(nn.Module):
             # for x in self.forward(torch.zeros(1, 3, s, s)):
             #     print (x.shape)
             with torch.no_grad():
-                model_out = self.forward(torch.zeros(1, 3, s, s))
-                
-            self.stride = Detector.strides           
+                model_out = self.forward(torch.zeros(1, 3, s, s),task=['detect'])
+
+            self.stride = Detector.strides
             Detector.initialize_biases(1e-2)
 
         initialize_weights(self)
 
-    def forward(self, x):
-        cache = []
-        out = []
-        det_out = None
-        Da_fmap = []
-        LL_fmap = []
-        # block_.index = i, 模块索引, from 0,1,2,3....67
-        # block_.from_ = from_，模块输入来源索引, -1 or list[-1, 16] or int(16)
-        for i, block in enumerate(self.model):
-            if block.from_ != -1:
-                x = cache[block.from_] if isinstance(block.from_, int) else [x if j == -1 else cache[j] for j in block.from_]       #calculate concat detect
-            x = block(x)
-            if i in self.seg_out_idx:     #save driving area segment result
-                # x=x.float()
-                # m=nn.Softmax(dim=1)
-                # m=nn.Sigmoid()
-                out.append(x)
-            if i == self.detector_index:
-                det_out = x
-            cache.append(x if block.index in self.save else None)
-            # cache[index] = x if block.index in self.save else None
+    # def forward(self, x, task):
+    #
+    #     print("x==========",x)
+    #     cache = []
+    #     out = []
+    #     det_out = None
+    #     Da_fmap = []
+    #     LL_fmap = []
+    #     # block_.index = i, 模块索引, from 0,1,2,3....67
+    #     # block_.from_ = from_，模块输入来源索引, -1 or list[-1, 16] or int(16)
+    #     for i, block in enumerate(self.model):
+    #
+    #         # 跳过不属于当前任务的 head 模块
+    #         if task == 'detect' and i in self.da_seg_idx + self.ll_seg_idx:
+    #             continue
+    #         if task == 'da' and i in [self.det_head_idx] + self.ll_seg_idx:
+    #             continue
+    #         if task == 'll' and i in [self.det_head_idx] + self.da_seg_idx:
+    #             continue
+    #
+    #         if block.from_ != -1:
+    #             x = cache[block.from_] if isinstance(block.from_, int) else [x if j == -1 else cache[j] for j in block.from_]       #calculate concat detect
+    #         x = block(x)
+    #
+    #         if i == self.det_head_idx and task == 'detect':
+    #             det_out = x
+    #         if i == self.da_seg_idx[-1] and task == 'da':
+    #             out.append(x)
+    #         if i == self.ll_seg_idx[-1] and task == 'll':
+    #             out.append(x)
+    #
+    #         cache.append(x if block.index in self.save else None)
+    #         # if i in self.seg_out_idx and task == 'seg':     #save driving area segment result
+    #         #     # x=x.float()
+    #         #     # m=nn.Softmax(dim=1)
+    #         #     # m=nn.Sigmoid()
+    #         #     out.append(x)
+    #         #     #print(out)
+    #         #
+    #         # if i == self.detector_index and task == 'detect':
+    #         #     det_out = x
+    #         #     #print(det_out)
+    #         # cache.append(x if block.index in self.save else None)
+    #         # #print(cache)
+    #         # # cache[index] = x if block.index in self.save else None
+    #
+    #     out.insert(0,det_out)
+    #     # out include (det_out, DD_out, LL_out)
+    #     return out
 
-        out.insert(0,det_out)
-        # out include (det_out, DD_out, LL_out)
-        return out            
+    def forward(self, x, task):
+        # print(task)
+        # if len(task) >1 :
+        #     task = task[0]
+        if torch.all(x == 0):
+            print("intput =========0,forward")
+
+        cache = []
+        #out = []
+        det_out = None
+        seg_out = None
+        depth_out = None
+
+        # 定义各分支的范围
+        backbone_neck_idx = [0, 1]
+        det_idx = [2]
+        da_seg_idx = list(range(3, 17))
+        ll_seg_idx = list(range(3, 32))
+
+        # 决定本次 forward 要执行哪些层
+        task = task[0] if isinstance(task, list) else task
+
+        if task == 'detect':
+            run_idx = backbone_neck_idx + det_idx
+        elif task == 'seg':
+            run_idx = backbone_neck_idx + da_seg_idx
+        elif task == 'depth':
+            run_idx = backbone_neck_idx + ll_seg_idx
+        else:
+            raise ValueError(f"Unknown task: {task}")
+
+        for i, block in enumerate(self.model):
+            if i not in run_idx:
+                cache.append(None)
+                continue
+
+            # 构造输入
+            if block.from_ != -1:
+                x_in = cache[block.from_] if isinstance(block.from_, int) else [x if j == -1 else cache[j] for j in
+                                                                                block.from_]
+            else:
+                x_in = x
+
+            print(i,task)
+            x = block(x_in)
+
+            # 保存输出结果
+            if i == 2 and task == 'detect':
+                det_out = x
+            if i == 16 and task == 'seg':
+                seg_out = x
+            if i == 31 and task == 'depth':
+                depth_out = x
+
+            cache.append(x if block.index in self.save else None)
+
+        #out.insert(0, det_out)
+        return [det_out,seg_out,depth_out]
 
     def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
         print('Fusing layers... ')
@@ -215,9 +307,12 @@ class MCnet(nn.Module):
                 m.fuse()
                 m.forward = m.fuseforward
         # self.info()
-        return self      
+        return self
 
-def get_net(cfg, **kwargs): 
+
+
+
+def get_net(cfg, **kwargs):
     m_block_cfg = YOLOP
     model = MCnet(m_block_cfg, **kwargs)
     return model
@@ -245,16 +340,18 @@ def fuse_conv_and_bn(conv, bn):
     return fusedconv
 
 if __name__ == "__main__":
-    from torch.utils.tensorboard import SummaryWriter
+#    from torch.utils.tensorboard import SummaryWriter
     model = get_net(False)
     input_ = torch.randn((1, 3, 256, 256))
     gt_ = torch.rand((1, 2, 256, 256))
     metric = SegmentationMetric(2)
-    model_out,SAD_out = model(input_)
-    detects, dring_area_seg, lane_line_seg = model_out
-    Da_fmap, LL_fmap = SAD_out
-    for det in detects:
-        print(det.shape)
+    # model_out,SAD_out = model(input_)
+    # detects, dring_area_seg, lane_line_seg = model_out
+    # Da_fmap, LL_fmap = SAD_out
+    detects, dring_area_seg, lane_line_seg = model(input_,task=['seg'])
+    #Da_fmap, LL_fmap = SAD_out
+    # for det in detects:
+    #     print(det.shape)
     print(dring_area_seg.shape)
-    print(lane_line_seg.shape)
+    # print(lane_line_seg.shape)
  

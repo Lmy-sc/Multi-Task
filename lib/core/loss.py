@@ -62,38 +62,59 @@ class MultiHeadLoss(nn.Module):
 
         """
         cfg = self.cfg
-        device = targets[0].device
+        # if targets[0] is not None:
+        #     device = targets[0].device
+        # else:
+        #     # 处理targets[0]为None的情况
+        device = torch.device('cuda')
+
+        # device = targets[0].device
 
         Det_loss, Da_Seg_Loss, Ll_Seg_Loss, Tversky_Loss = self.loss_list
 
+        det_all_loss = torch.tensor(0., device=device)
+        da_seg_loss = torch.tensor(0., device=device)
+        ll_seg_loss = torch.tensor(0., device=device)
+        ll_tversky_loss = torch.tensor(0., device=device)
+
         # ComputeLossOTA
-        det_all_loss = Det_loss(predictions[0], targets[0], imgs)
+        if targets[0] is not None:
+            det_all_loss = Det_loss(predictions[0], targets[0], imgs)
+            det_all_loss *= 0.02 * self.lambdas[1]
 
         # driving area BCE loss 
         # predictions[1] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
-        drive_area_seg_predicts = predictions[1].view(-1)
+        if targets[1] is not None :
+            drive_area_seg_predicts = predictions[1].view(-1)
         # target[1] = shape( B 2 H W ) , dim0=bg, dim1 = road
-        drive_area_seg_targets = targets[1].view(-1)
-        da_seg_loss = Da_Seg_Loss(drive_area_seg_predicts, drive_area_seg_targets)
+            drive_area_seg_targets = targets[1].view(-1)
 
-        # lane line focal loss
-        # predictions[2] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
-        lane_line_seg_predicts = predictions[2].view(-1)
-        # target[2] = shape( B 2 H W ) 
-        lane_line_seg_targets = targets[2].view(-1)
-        ll_seg_loss = Ll_Seg_Loss(lane_line_seg_predicts, lane_line_seg_targets)
+            da_seg_loss = Da_Seg_Loss(drive_area_seg_predicts, drive_area_seg_targets)
 
-        # predictions[1] = shape( B 3 H W ) ， dim0=bg, dim1 = road, dim2 = lane
-        tversky_predicts = predictions[2]
-        # target[1] = shape( B 3 H W ) ,   dim0=bg, dim1 = road, dim2 = lane
-        tversky_targets = targets[2]
-        ll_tversky_loss = Tversky_Loss(tversky_predicts, tversky_targets)
+            da_seg_loss *= 0.2 * self.lambdas[2]
+
+        if targets[2] is not None:
+            # lane line focal loss
+            # predictions[2] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
+            lane_line_seg_predicts = predictions[2].view(-1)
+            # target[2] = shape( B 2 H W )
+            lane_line_seg_targets = targets[2].view(-1)
+
+            ll_seg_loss = Ll_Seg_Loss(lane_line_seg_predicts, lane_line_seg_targets)
+
+            # predictions[1] = shape( B 3 H W ) ， dim0=bg, dim1 = road, dim2 = lane
+            tversky_predicts = predictions[2]
+            # target[1] = shape( B 3 H W ) ,   dim0=bg, dim1 = road, dim2 = lane
+            tversky_targets = targets[2]
+            ll_tversky_loss = Tversky_Loss(tversky_predicts, tversky_targets)
+
+            ll_seg_loss *= 0.2 * self.lambdas[3]
+            ll_tversky_loss *= 0.2 * self.lambdas[4]
 
 
-        det_all_loss *= 0.02 * self.lambdas[1]
-        da_seg_loss *= 0.2 * self.lambdas[2]
-        ll_seg_loss *= 0.2 * self.lambdas[3]
-        ll_tversky_loss *= 0.2 * self.lambdas[4]
+        #
+        # ll_seg_loss *= 0.2 * self.lambdas[3]
+        # ll_tversky_loss *= 0.2 * self.lambdas[4]
         
         loss = det_all_loss + da_seg_loss + ll_seg_loss + ll_tversky_loss
 

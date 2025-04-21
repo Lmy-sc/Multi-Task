@@ -48,7 +48,10 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
     model.train()
     start = time.time()
 
-    for i, (input, target, paths, shapes) in enumerate(train_loader):
+    for i, (input, target, paths, shapes,task) in enumerate(train_loader):
+
+        print("trainloader",paths)
+        #print(input, target, paths, shapes,task)
         intermediate = time.time()
         #print('tims:{}'.format(intermediate-start))
         num_iter = i + num_batch * (epoch - 1)
@@ -66,16 +69,35 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
                     x['momentum'] = np.interp(num_iter, xi, [cfg.TRAIN.WARMUP_MOMENTUM, cfg.TRAIN.MOMENTUM])
 
         data_time.update(time.time() - start)
+        # if not cfg.DEBUG:
+        #     input = input.to(device, non_blocking=True)
+        #     assign_target = []
+        #     for tgt in target:
+        #         print(tgt)
+        #         assign_target.append(tgt.to(device))
+        #     target = assign_target
         if not cfg.DEBUG:
             input = input.to(device, non_blocking=True)
             assign_target = []
-            for tgt in target:
-                assign_target.append(tgt.to(device))
-            target = assign_target
-        with amp.autocast(enabled=device.type != 'cpu'):
-            outputs = model(input)
-            total_loss, head_losses = criterion(outputs, target, shapes,model,input)            
 
+            #print(target)
+            for tgt in target:
+                print(type(tgt), tgt.shape if tgt is not None else "None")
+                if isinstance(tgt, torch.Tensor):
+                    assign_target.append(tgt.to(device))
+                else:
+                    assign_target.append(None)
+
+            target = assign_target
+
+
+
+        with amp.autocast(enabled=device.type != 'cpu'):
+            outputs = model(input,task)
+            #outputs = model(input)
+            total_loss, head_losses = criterion(outputs, target, shapes,model,input)
+
+        freeze_branch(model, task)
         # compute gradient and do update step
         optimizer.zero_grad()
         scaler.scale(total_loss).backward()
@@ -111,6 +133,22 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
                 # writer.add_scalar('train_acc', acc.val, global_steps)
                 writer_dict['train_global_steps'] = global_steps + 1
 
+
+def freeze_branch(model, task):
+
+    for i, m in enumerate(model.model):
+        if task == 'detect' and i not in [0, 1, 2]:
+            for param in m.parameters():
+                param.requires_grad = False
+        elif task == 'seg' and i not in [0,1]+list(range(3, 17)):
+            for param in m.parameters():
+                param.requires_grad = False
+        elif task == 'depth' and i not in [0,1]+list(range(17, 32)):
+            for param in m.parameters():
+                param.requires_grad = False
+        else:
+            for param in m.parameters():
+                param.requires_grad = True
 
 def validate(epoch,config, val_loader, val_dataset, model, criterion, output_dir,
              tb_log_dir, writer_dict=None, logger=None, device='cpu', rank=-1):
