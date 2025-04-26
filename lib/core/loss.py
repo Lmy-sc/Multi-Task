@@ -8,6 +8,7 @@ from torch.nn.modules.loss import _Loss
 from lib.models.YOLOX_Loss import YOLOX_Loss
 #import torch.nn.functional as f
 #from typing import optional, list
+from bts.bts import silog_loss
 
 class MultiHeadLoss(nn.Module):
     """
@@ -74,7 +75,7 @@ class MultiHeadLoss(nn.Module):
 
         det_all_loss = torch.tensor(0., device=device)
         da_seg_loss = torch.tensor(0., device=device)
-        ll_seg_loss = torch.tensor(0., device=device)
+        depth_loss = torch.tensor(0., device=device)
         ll_tversky_loss = torch.tensor(0., device=device)
 
         # ComputeLossOTA
@@ -96,29 +97,42 @@ class MultiHeadLoss(nn.Module):
         if targets[2] is not None:
             # lane line focal loss
             # predictions[2] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
-            lane_line_seg_predicts = predictions[2].view(-1)
-            # target[2] = shape( B 2 H W )
-            lane_line_seg_targets = targets[2].view(-1)
 
-            ll_seg_loss = Ll_Seg_Loss(lane_line_seg_predicts, lane_line_seg_targets)
+            dataset = False
+            lpg8x8, lpg4x4, lpg2x2, reduc1x1, depth_est = predictions[2]
 
-            # predictions[1] = shape( B 3 H W ) ， dim0=bg, dim1 = road, dim2 = lane
-            tversky_predicts = predictions[2]
-            # target[1] = shape( B 3 H W ) ,   dim0=bg, dim1 = road, dim2 = lane
-            tversky_targets = targets[2]
-            ll_tversky_loss = Tversky_Loss(tversky_predicts, tversky_targets)
+            if dataset:
+                mask = targets[2] > 0.1
+            else:
+                mask = targets[2] > 1.0
 
-            ll_seg_loss *= 0.2 * self.lambdas[3]
-            ll_tversky_loss *= 0.2 * self.lambdas[4]
+
+            silog_criterion = silog_loss(variance_focus=0.85)
+            depth_loss = silog_criterion.forward(depth_est, targets[2], mask.to(torch.bool))
+
+            # lane_line_seg_predicts = predictions[2].view(-1)
+            # # target[2] = shape( B 2 H W )
+            # lane_line_seg_targets = targets[2].view(-1)
+            #
+             #ll_seg_loss = Ll_Seg_Loss(lane_line_seg_predicts, lane_line_seg_targets)
+            #
+            # # predictions[1] = shape( B 3 H W ) ， dim0=bg, dim1 = road, dim2 = lane
+            # tversky_predicts = predictions[2]
+            # # target[1] = shape( B 3 H W ) ,   dim0=bg, dim1 = road, dim2 = lane
+            # tversky_targets = targets[2]
+            # ll_tversky_loss = Tversky_Loss(tversky_predicts, tversky_targets)
+            #
+            # ll_seg_loss *= 0.2 * self.lambdas[3]
+            # ll_tversky_loss *= 0.2 * self.lambdas[4]
 
 
         #
         # ll_seg_loss *= 0.2 * self.lambdas[3]
         # ll_tversky_loss *= 0.2 * self.lambdas[4]
         
-        loss = det_all_loss + da_seg_loss + ll_seg_loss + ll_tversky_loss
+        loss = det_all_loss + da_seg_loss + depth_loss + depth_loss
 
-        return loss, (det_all_loss.item(), da_seg_loss.item(), ll_seg_loss.item(), ll_tversky_loss.item(), loss.item())
+        return loss, (det_all_loss.item(), da_seg_loss.item(), depth_loss.item(), ll_tversky_loss.item(), loss.item())
 
 
 def get_loss(cfg, device, model):

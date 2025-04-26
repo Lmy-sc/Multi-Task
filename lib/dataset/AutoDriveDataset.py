@@ -463,14 +463,23 @@ class AutoDriveDataset(Dataset):
             else:
                 seg_label = torch.stack((seg2[0], seg1[0]), 0)
 
+        # if data['tape'] == 'depth':
+        #
+        #     _,lane1 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY)
+        #     _,lane2 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY_INV)
+        #     lane1 = self.Tensor(lane1)
+        #     lane2 = self.Tensor(lane2)
+        #     lane_label = torch.stack((lane2[0], lane1[0]),0)
+
         if data['tape'] == 'depth':
+            if isinstance(lane_label, np.ndarray):
+                lane_label = self.Tensor(lane_label)
 
-            _,lane1 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY)
-            _,lane2 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY_INV)
-            lane1 = self.Tensor(lane1)
-            lane2 = self.Tensor(lane2)
-            lane_label = torch.stack((lane2[0], lane1[0]),0)
+            # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
+            if lane_label.ndim == 2:
+                lane_label = lane_label.unsqueeze(0)
 
+            # lane_label 就是单通道深度图
 
         target = [labels_out, seg_label, lane_label]
 

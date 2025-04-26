@@ -19,17 +19,18 @@ from torch.nn import Upsample
 from lib.utils import check_anchor_order
 from lib.core.evaluate import SegmentationMetric
 from lib.utils.utils import time_synchronized
-from lib.models.common import Conv, seg_head, PSA_p, MergeBlock
+from lib.models.common import Conv, seg_head, PSA_p, MergeBlock, FPN_C2C12C131619
 from lib.models.common import Concat, FPN_C2, FPN_C3, FPN_C4, ELANNet, ELANBlock_Head, PaFPNELAN, IDetect, RepConv
 # from lib.models.YOLOX_Head_scales import YOLOXHead
 from lib.models.YOLOX_Head_scales_noshare import YOLOXHead
+from bts.bts import bts
 
 # 修改
 # The lane line and the driving area segment branches without share information with each other and without link
 YOLOP = [
 ###### prediction head index
 # [2, 16, 28],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx no_use c2
-[2, 16, 31],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx use_c2
+[2, 16, 18],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx use_c2
 
 ###### Backbone
 [ -1, ELANNet, [True]],   #0
@@ -76,22 +77,24 @@ YOLOP = [
 
 # use C2
 ###########
-[ 1, FPN_C2, []],  #17
-[ -1, Conv, [256, 128, 3, 1]],    #18
-# sum c2 and p3
-[ 3, Conv, [256, 128, 3, 1]],  
-[ -1, Upsample, [None, 2, 'bilinear']],  
-[ [-1, 18], MergeBlock, ["add"]],    #C2 and P3
-[ -1, ELANBlock_Head, [128, 64]], 
-[ -1, PSA_p, [64, 64]], 
-[ -1, Conv, [64, 32, 3, 1]], 
-[ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [32, 16, 3, 1]], 
-[ -1, ELANBlock_Head, [16, 8]], 
-[ -1, PSA_p, [8, 8]], 
-[ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [8, 2, 3, 1]], #
-[ -1, seg_head, ['sigmoid']],  #31 segmentation head
+[1 ,FPN_C2C12C131619,[]], #17
+[-1 ,bts , [[64,256,256,256,512]] ]    #18
+# [ 1, FPN_C2, []],  #17
+# [ -1, Conv, [256, 128, 3, 1]],    #18
+# # sum c2 and p3
+# [ 3, Conv, [256, 128, 3, 1]],
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ [-1, 18], MergeBlock, ["add"]],    #C2 and P3
+# [ -1, ELANBlock_Head, [128, 64]],
+# [ -1, PSA_p, [64, 64]],
+# [ -1, Conv, [64, 32, 3, 1]],
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ -1, Conv, [32, 16, 3, 1]],
+# [ -1, ELANBlock_Head, [16, 8]],
+# [ -1, PSA_p, [8, 8]],
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ -1, Conv, [8, 2, 3, 1]], #
+# [ -1, seg_head, ['sigmoid']],  #31 segmentation head
 
 # # use C2
 # ###########
@@ -150,6 +153,7 @@ class MCnet(nn.Module):
 
             # *args,参数解码 [3, 32, 3] -> 3, 32, 3
             # 构建一系列模块，实例化block
+            print(i)
             block_ = block(*args)
 
             # 模块索引，模块输入来源索引          
@@ -181,55 +185,6 @@ class MCnet(nn.Module):
 
         initialize_weights(self)
 
-    # def forward(self, x, task):
-    #
-    #     print("x==========",x)
-    #     cache = []
-    #     out = []
-    #     det_out = None
-    #     Da_fmap = []
-    #     LL_fmap = []
-    #     # block_.index = i, 模块索引, from 0,1,2,3....67
-    #     # block_.from_ = from_，模块输入来源索引, -1 or list[-1, 16] or int(16)
-    #     for i, block in enumerate(self.model):
-    #
-    #         # 跳过不属于当前任务的 head 模块
-    #         if task == 'detect' and i in self.da_seg_idx + self.ll_seg_idx:
-    #             continue
-    #         if task == 'da' and i in [self.det_head_idx] + self.ll_seg_idx:
-    #             continue
-    #         if task == 'll' and i in [self.det_head_idx] + self.da_seg_idx:
-    #             continue
-    #
-    #         if block.from_ != -1:
-    #             x = cache[block.from_] if isinstance(block.from_, int) else [x if j == -1 else cache[j] for j in block.from_]       #calculate concat detect
-    #         x = block(x)
-    #
-    #         if i == self.det_head_idx and task == 'detect':
-    #             det_out = x
-    #         if i == self.da_seg_idx[-1] and task == 'da':
-    #             out.append(x)
-    #         if i == self.ll_seg_idx[-1] and task == 'll':
-    #             out.append(x)
-    #
-    #         cache.append(x if block.index in self.save else None)
-    #         # if i in self.seg_out_idx and task == 'seg':     #save driving area segment result
-    #         #     # x=x.float()
-    #         #     # m=nn.Softmax(dim=1)
-    #         #     # m=nn.Sigmoid()
-    #         #     out.append(x)
-    #         #     #print(out)
-    #         #
-    #         # if i == self.detector_index and task == 'detect':
-    #         #     det_out = x
-    #         #     #print(det_out)
-    #         # cache.append(x if block.index in self.save else None)
-    #         # #print(cache)
-    #         # # cache[index] = x if block.index in self.save else None
-    #
-    #     out.insert(0,det_out)
-    #     # out include (det_out, DD_out, LL_out)
-    #     return out
 
     def forward(self, x, task):
         # print(task)
@@ -248,7 +203,7 @@ class MCnet(nn.Module):
         backbone_neck_idx = [0, 1]
         det_idx = [2]
         da_seg_idx = list(range(3, 17))
-        ll_seg_idx = list(range(3, 32))
+        ll_seg_idx = list(range(17, 19))
 
         # 决定本次 forward 要执行哪些层
         task = task[0] if isinstance(task, list) else task
@@ -282,7 +237,7 @@ class MCnet(nn.Module):
                 det_out = x
             if i == 16 and task == 'seg':
                 seg_out = x
-            if i == 31 and task == 'depth':
+            if i == 18 and task == 'depth':
                 depth_out = x
 
             cache.append(x if block.index in self.save else None)
@@ -310,6 +265,21 @@ class MCnet(nn.Module):
         return self
 
 
+# class FullModel(nn.Module):
+#     def __init__(self, unit_cfg, multitask_model):
+#         super().__init__()
+#         self.unit_module = unit_module()  # 你的 UnitModule 配置
+#         self.multi_task_model = multitask_model    # 原有多任务模型
+#
+#     def forward(self, x, targets=None):
+#         # 前向走 UnitModule（启用训练分支）
+#         x = self.unit_module(x, training=True)[0]  # 输出去噪图像
+#
+#         # 前向走多任务主模型
+#         if self.training:
+#             return self.multi_task_model(x, targets)
+#         else:
+#             return self.multi_task_model(x)
 
 
 def get_net(cfg, **kwargs):

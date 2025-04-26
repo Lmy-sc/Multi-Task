@@ -17,7 +17,7 @@ import math
 from torch.cuda import amp
 from tqdm import tqdm
 
-def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_batch, num_warmup,
+def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, num_batch, num_warmup,
           writer_dict, logger, device, rank = -1):
     """
     train for one epoch
@@ -93,15 +93,23 @@ def train(cfg, train_loader, model, criterion, optimizer, scaler, epoch, num_bat
 
 
         with amp.autocast(enabled=device.type != 'cpu'):
-            outputs = model(input,task)
+            input1,losses_unit_module = model1(input)
+            # input1 = input1.to(device)
+            # losses_unit_module = losses_unit_module.to(device)
+            outputs = model(input1,task)
             #outputs = model(input)
             total_loss, head_losses = criterion(outputs, target, shapes,model,input)
+            # print(losses_unit_module)
+            # total_loss = total_loss+losses_unit_module
+            total_loss = total_loss + sum(losses_unit_module.values())
 
         freeze_branch(model, task)
         # compute gradient and do update step
         optimizer.zero_grad()
+
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
+
         scaler.update()
 
         if rank in [-1, 0]:

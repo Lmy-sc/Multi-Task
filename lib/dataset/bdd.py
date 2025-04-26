@@ -66,7 +66,7 @@ class BddDataset(AutoDriveDataset):
         # ===================== 2. segmentation dataset =====================
         if hasattr(self, "seg_list"):
             for mask_path in tqdm(self.seg_list, desc="Loading segmentation"):
-                image_path = str(mask_path).replace(str(self.mask_root), str(self.img_root2)).replace(".png", ".jpg")
+                image_path = str(mask_path).replace(str(self.mask_root), str(self.img_root2)).replace(".bmp", ".jpg")
                 rec = [{
                     'image': image_path,
                     'label': None,

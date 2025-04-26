@@ -1283,13 +1283,14 @@ class ELANNet(nn.Module):
  
     def forward(self, x):
         x = self.layer_1(x)
+        c1 = x
         c2 = self.layer_2(x)
         c3 = self.layer_3(c2)
         c4 = self.layer_4(c3)
         c5 = self.layer_5(c4)
 
         if self.use_C2:
-            return c2, c3, c4, c5
+            return c1,c2, c3, c4, c5
         else:
             return c3, c4, c5
 
@@ -1333,7 +1334,7 @@ class PaFPNELAN(nn.Module):
 
     def forward(self, features):
         # c3, c4, c5
-        C2, c3, c4, c5 = features
+        c1,C2, c3, c4, c5 = features
 
         # SPP Module
         c5 = self.SPPF(c5)
@@ -1362,7 +1363,7 @@ class PaFPNELAN(nn.Module):
         c18 = torch.cat([c17, c5], dim=1)
         c19 = self.head_elan_4(c18)
 
-        return C2, c5, c8, c12, c13, c16, c19
+        return c1,C2, c5, c8, c12, c13, c16, c19
 
 # PaFPN-ELAN (YOLOv7's)
 class PaFPNELAN_Ghost(nn.Module):
@@ -2121,13 +2122,27 @@ class ProgressiveUpsampleWithC2(nn.Module):
 
         return x_all
 
+class FPN_C2C12C131619(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        c1, c2, _ ,_, c12, c13, c16, c19 = x
+        print(f"c1: {c1.shape}")
+        print(f"c2: {c2.shape}")
+        print(f"c5: {c12.shape}")
+        print(f"c16: {c16.shape}")
+        print(f"c19: {c19.shape}")
+        return c1,c2, c12 ,c16,c19
+
+
 class FPN_C2(nn.Module):
     def __init__(self, dim = 64):
         super().__init__()
         self.dim = dim
 
     def forward(self, x):
-        c2 , _ , _ , _ , _ , _ , _ = x
+        _, c2 , _ , _ , _ , _ , _ , _ = x
         return c2
 
 class FPN_C3(nn.Module):
@@ -2136,7 +2151,7 @@ class FPN_C3(nn.Module):
         self.dim = dim
 
     def forward(self, x):
-        _ , _ , _ , n2 , _ , _ , _ = x
+        _,_ , _ , _ , n2 , _ , _ , _ = x
         return n2
 
 class FPN_C4(nn.Module):
@@ -2145,7 +2160,7 @@ class FPN_C4(nn.Module):
         self.dim = dim
 
     def forward(self, x):
-        _ , _ , n3 ,_ ,  _ , _ , _ = x
+        _,_ , _ , n3 ,_ ,  _ , _ , _ = x
         return n3
 
 class seg_head(nn.Module):

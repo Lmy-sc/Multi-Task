@@ -59,10 +59,10 @@ _C.DATASET = CN(new_allowed=True)
 # _C.DATASET.DATAROOT = 'D:/pyt37/bdd100k_images_100k/100k'       # the path of images folder
 _C.DATASET.DATAROOT1 = 'D:/pyt37/detect/100k/image'
 _C.DATASET.DATAROOT2 = 'D:/pyt37/seg/100k/image'
-_C.DATASET.DATAROOT3 = 'D:/pyt37/depth/100k/image'
+_C.DATASET.DATAROOT3 = 'D:/NYUv2pics/nyu_images'
 _C.DATASET.LABELROOT = 'D:/pyt37/detect/100k/label'      # the path of det_annotations folder
 _C.DATASET.MASKROOT = 'D:/pyt37/seg/100k/gt'                # the path of da_seg_annotations folder
-_C.DATASET.LANEROOT = 'D:/pyt37/depth/100k/gt'
+_C.DATASET.LANEROOT = 'D:/NYUv2pics/nyu_depths'
 # _C.DATASET.DATAROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd100k/images/100k'       # the path of images folder
 # _C.DATASET.LABELROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd100k/labels/100k'      # the path of det_annotations folder
 # _C.DATASET.MASKROOT = '/media/jiao/39b48156-5afd-4cd7-bddc-f6ecf4631a79/zhanjiao/dataset/bdd/bdd_seg_gt'                # the path of da_seg_annotations folder
@@ -102,8 +102,8 @@ _C.TRAIN.NESTEROV = True
 _C.TRAIN.GAMMA1 = 0.99
 _C.TRAIN.GAMMA2 = 0.0
 
-_C.TRAIN.BEGIN_EPOCH = 0
-_C.TRAIN.END_EPOCH = 200
+_C.TRAIN.BEGIN_EPOCH = 50
+_C.TRAIN.END_EPOCH = 80
 
 _C.TRAIN.VAL_FREQ = 20
 _C.TRAIN.BATCH_SIZE_PER_GPU = 4#32
@@ -138,6 +138,8 @@ _C.TEST.SAVE_TXT = False
 _C.TEST.PLOTS = False
 _C.TEST.NMS_CONF_THRESHOLD  = 0.001
 _C.TEST.NMS_IOU_THRESHOLD  = 0.6
+
+_C.Is_Train =True
 
 
 def update_config(cfg, args):

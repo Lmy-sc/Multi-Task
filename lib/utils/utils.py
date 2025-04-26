@@ -82,7 +82,7 @@ def get_optimizer(cfg, model):
     optimizer = None
     if cfg.TRAIN.OPTIMIZER == 'sgd':
         optimizer = optim.SGD(
-            filter(lambda p: p.requires_grad, model.parameters()),
+            filter(lambda p: p.requires_grad, model),
             lr=cfg.TRAIN.LR0,
             momentum=cfg.TRAIN.MOMENTUM,
             weight_decay=cfg.TRAIN.WD,
@@ -90,14 +90,14 @@ def get_optimizer(cfg, model):
         )
     elif cfg.TRAIN.OPTIMIZER == 'adam':
         optimizer = optim.Adam(
-            filter(lambda p: p.requires_grad, model.parameters()),
+            filter(lambda p: p.requires_grad, model),
             #model.parameters(),
             lr=cfg.TRAIN.LR0,
             betas=(cfg.TRAIN.MOMENTUM, 0.999)
         )
     elif cfg.TRAIN.OPTIMIZER == 'adamw':
         optimizer = optim.AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
+            filter(lambda p: p.requires_grad, model),
             #model.parameters(),
             lr=cfg.TRAIN.LR0,
             betas=(cfg.TRAIN.MOMENTUM, 0.999)
