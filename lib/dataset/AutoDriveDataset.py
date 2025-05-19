@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 # np.set_printoptions(threshold=np.inf)
@@ -69,8 +71,8 @@ class AutoDriveDataset(Dataset):
 
         # self.label_list = self.label_root.iterdir()
         # self.mask_list = self.mask_root.iterdir()
-        self.det_list = list(self.label_root.glob("*.json")) if self.label_root.exists() else []
-        self.seg_list = list(self.mask_root.glob("*.png")) if self.mask_root.exists() else []
+        self.det_list = list(self.label_root.glob("*.txt")) if self.label_root.exists() else []
+        self.seg_list = list(self.mask_root.glob("*.bmp")) if self.mask_root.exists() else []
         self.lane_list = list(self.lane_root.glob("*.png")) if self.lane_root.exists() else []
 
         # albumentation data arguments
@@ -224,6 +226,7 @@ class AutoDriveDataset(Dataset):
     def load_image(self, idx):
         data = self.db[idx]
         img = cv2.imread(data["image"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+
         if img is None:
             raise FileNotFoundError(f"❌ 图像读取失败：{data['image']}")
 
@@ -233,38 +236,61 @@ class AutoDriveDataset(Dataset):
         # 加载目标检测标签 (如果存在)
         det_label = None
         if "label" in data and data["label"] is not None:
+
             det_label = data["label"]
             det_label = np.array(det_label)  # 确保标签是数组格式
 
         # 加载分割标签 (如果存在)
         seg_label = None
         if "mask" in data and data["mask"] is not None:
-            if self.cfg.num_seg_class == 3:
-                seg_label = cv2.imread(data["mask"])  # 读取彩色分割标签
-            else:
-                seg_label = cv2.imread(data["mask"], 0)  # 读取单通道分割标签
+            seg_label = cv2.imread(data["mask"])  # 读取彩色分割标签
+
 
         # 加载车道线标签 (如果存在)
         lane_label = None
         if "lane" in data and data["lane"] is not None:
-            lane_label = cv2.imread(data["lane"], 0)  # 读取车道线标签
+            lane_label = cv2.imread(data["lane"],0)  # 读取车道线标签
+
 
         # 图像大小和目标大小调整
         resized_shape = self.inputsize
-        if isinstance(resized_shape, list):
-            resized_shape = max(resized_shape)
-        h0, w0 = img.shape[:2]  # 原始高宽
-        r = resized_shape / max(h0, w0)  # 计算缩放比例
+        if isinstance(resized_shape, list) or isinstance(resized_shape, tuple):
+            resized_shape = max(resized_shape)  # 取最大边，确保是 int
 
-        if r != 1:  # 如果缩放比例不是1，进行调整
-            interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
-            img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
-            if seg_label is not None:
-                seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
-            if lane_label is not None:
-                lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        h0, w0 = img.shape[:2]
+        max_h, max_w = 480,640
+        # 再计算 resize 比例
+        r = resized_shape / max(max_h, max_w)
+
+        # 计算 resize 后的新尺寸
+        new_h, new_w = int(max_h * r), int(max_w * r)
+        interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
+
+        # resize 三张图
+        img = cv2.resize(img, (new_w, new_h), interpolation=interp)
+        if seg_label is not None:
+            seg_label = cv2.resize(seg_label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        if lane_label is not None:
+            lane_label = cv2.resize(lane_label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        # if isinstance(resized_shape, list):
+        #     resized_shape = max(resized_shape)
+        # h0, w0 = img.shape[:2]  # 原始高宽
+        # r = resized_shape / max(h0, w0)  # 计算缩放比例
+        #
+        # if r != False:  # 如果缩放比例不是1，进行调整
+        #     interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
+        #     img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        #     print("11111111111111111")
+        #     print(img.shape[:2])
+        #     if seg_label is not None:
+        #         seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        #
+        #     if lane_label is not None:
+        #         lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        #
 
         h, w = img.shape[:2]  # 更新后的高度和宽度
+
 
         # 目标检测标签：将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
         labels = []
@@ -278,54 +304,7 @@ class AutoDriveDataset(Dataset):
         # 返回图像和标签
         return img, labels, seg_label, lane_label, (h0, w0), (h, w), data['image']
 
-    # def load_image(self, idx):
-    #     data = self.db[idx]
-    #     img = cv2.imread(data["image"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
-    #     if img is None:
-    #         raise FileNotFoundError(f"❌ 图像读取失败：{data['image']}")
-    #
-    #     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    #     # seg_label = cv2.imread(data["mask"], 0)
-    #
-    #     #default==2 如果class==3 读取彩色mask
-    #
-    #
-    #
-    #     if self.cfg.num_seg_class == 3:
-    #         seg_label = cv2.imread(data["mask"])
-    #     else:
-    #         seg_label = cv2.imread(data["mask"], 0)
-    #
-    #     lane_label = cv2.imread(data["lane"], 0)
-    #
-    #     resized_shape = self.inputsize
-    #     if isinstance(resized_shape, list):
-    #         resized_shape = max(resized_shape)
-    #     h0, w0 = img.shape[:2]  # orig hw
-    #     r = resized_shape / max(h0, w0)  # resize image to img_size
-    #
-    #
-    #     if r != 1:  # always resize down, only resize up if training with augmentation
-    #         interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
-    #         img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
-    #         seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
-    #         lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
-    #     h, w = img.shape[:2]
-    #
-    #     det_label = data["label"]
-    #     labels=[]
-    #
-    #     #将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
-    #     if det_label.size > 0:
-    #         # Normalized xywh to pixel xyxy format
-    #         labels = det_label.copy()
-    #
-    #         labels[:, 1] = (det_label[:, 1] - det_label[:, 3] / 2) * w
-    #         labels[:, 2] = (det_label[:, 2] - det_label[:, 4] / 2) * h
-    #         labels[:, 3] = (det_label[:, 1] + det_label[:, 3] / 2) * w
-    #         labels[:, 4] = (det_label[:, 2] + det_label[:, 4] / 2) * h
-    #
-    #     return img, labels, seg_label, lane_label, (h0, w0), (h,w), data['image']
+
 
     def __getitem__(self, idx):
         """
@@ -348,19 +327,20 @@ class AutoDriveDataset(Dataset):
 
         data = self.db[idx]
         if self.is_train:
-            mosaic_this = False
-            if random.random() < self.mosaic_rate:
-                mosaic_this = True
-                #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
-                #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
-                img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
+            # mosaic_this = False
+            # if random.random() < self.mosaic_rate:
+            #     mosaic_this = True
+            #     #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
+            #     #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
+            #     img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
+            #
+            #     # mixup is double mosaic, really slow
+            #     if random.random() < self.mixup_rate:
+            #         img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
+            #         img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2)
+            # else:
+            img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
 
-                # mixup is double mosaic, really slow
-                if random.random() < self.mixup_rate:
-                    img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
-                    img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2)
-            else:
-                img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
 
             # try:
             #     new = self.albumentations_transform(image=img, mask=seg_label, mask0=lane_label,
@@ -386,42 +366,43 @@ class AutoDriveDataset(Dataset):
             #
             # augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
 
-            # random left-right flip
-            if random.random() < 0.5:
-                img = np.fliplr(img)
+            #random left-right flip
+        #     if random.random() < 0.5:
+        #         img = np.fliplr(img)
+        #
+        #         if len(labels):
+        #             rows, cols, channels = img.shape
+        #             x1 = labels[:, 1].copy()
+        #             x2 = labels[:, 3].copy()
+        #             x_tmp = x1.copy()
+        #             labels[:, 1] = cols - x2
+        #             labels[:, 3] = cols - x_tmp
+        #
+        #         if data['tape']=='seg':
+        #             seg_label = np.fliplr(seg_label)
+        #         if data['tape'] == 'depth':
+        #             lane_label = np.fliplr(lane_label)
+        #
+        #     # random up-down flip
+        #     if random.random() < 0.0:
+        #         img = np.flipud(img)
+        #
+        #         if len(labels):
+        #             rows, cols, channels = img.shape
+        #             y1 = labels[:, 2].copy()
+        #             y2 = labels[:, 4].copy()
+        #             y_tmp = y1.copy()
+        #             labels[:, 2] = rows - y2
+        #             labels[:, 4] = rows - y_tmp
+        #         if data['tape'] == 'seg':
+        #             seg_label = np.flipud(seg_label)
+        #         if data['tape'] == 'depth':
+        #             lane_label = np.flipud(lane_label)
+        #
+        # else:
+        img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
 
-                if len(labels):
-                    rows, cols, channels = img.shape
-                    x1 = labels[:, 1].copy()
-                    x2 = labels[:, 3].copy()
-                    x_tmp = x1.copy()
-                    labels[:, 1] = cols - x2
-                    labels[:, 3] = cols - x_tmp
 
-                if data['tape']=='seg':
-                    seg_label = np.fliplr(seg_label)
-                if data['tape'] == 'depth':
-                    lane_label = np.fliplr(lane_label)
-
-            # random up-down flip
-            if random.random() < 0.0:
-                img = np.flipud(img)
-
-                if len(labels):
-                    rows, cols, channels = img.shape
-                    y1 = labels[:, 2].copy()
-                    y2 = labels[:, 4].copy()
-                    y_tmp = y1.copy()
-                    labels[:, 2] = rows - y2
-                    labels[:, 4] = rows - y_tmp
-                if data['tape'] == 'seg':
-                    seg_label = np.flipud(seg_label)
-                if data['tape'] == 'depth':
-                    lane_label = np.flipud(lane_label)
-
-        else:
-            img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
-        
         (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)
         shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
@@ -442,26 +423,49 @@ class AutoDriveDataset(Dataset):
                 labels_out[:, :] = torch.from_numpy(labels)
 
         img = np.ascontiguousarray(img)
+
+        # if data['tape'] == 'detect' and len(labels_out):
+        #     for label in labels_out:
+        #         cls_id, cx, cy, w, h = label.tolist()
+        #         x1 = int(cx - w / 2)
+        #         y1 = int(cy - h / 2)
+        #         x2 = int(cx + w / 2)
+        #         y2 = int(cy + h / 2)
+        #         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        #         cv2.putText(img, f'{int(cls_id)}', (x1, y1 - 5),
+        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        #     save_dir='D:\Multi-task\Git\Multi-Task\inference\image_output'
+        #     cv2.imwrite(os.path.join(save_dir, f'{Path(path).stem}_gt.jpg'), img)
+
         if data['tape'] == 'seg':
-            if self.cfg.num_seg_class == 3:
-                _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
-                _,seg1 = cv2.threshold(seg_label[:,:,1],1,255,cv2.THRESH_BINARY)
-                _,seg2 = cv2.threshold(seg_label[:,:,2],1,255,cv2.THRESH_BINARY)
-            else:
-                _,seg1 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY)
-                _,seg2 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY_INV)
 
 
-            if self.cfg.num_seg_class == 3:
-                seg0 = self.Tensor(seg0)
+            seg_label = torch.tensor(seg_label)
+            # seg_label=self.Tensor(seg_label)
+            r = (seg_label[:, :, 0] > 127).long()
+            g = (seg_label[:, :, 1] > 127).long()
+            b = (seg_label[:, :, 2] > 127).long()
+            seg_label= (r << 2) + (g << 1) + b
 
-            seg1 = self.Tensor(seg1)
-            seg2 = self.Tensor(seg2)
-
-            if self.cfg.num_seg_class == 3:
-                seg_label = torch.stack((seg0[0], seg1[0], seg2[0]), 0)
-            else:
-                seg_label = torch.stack((seg2[0], seg1[0]), 0)
+            # if self.cfg.num_seg_class == 3:
+            #     _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
+            #     _,seg1 = cv2.threshold(seg_label[:,:,1],1,255,cv2.THRESH_BINARY)
+            #     _,seg2 = cv2.threshold(seg_label[:,:,2],1,255,cv2.THRESH_BINARY)
+            # else:
+            #     _,seg1 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY)
+            #     _,seg2 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY_INV)
+            #
+            #
+            # if self.cfg.num_seg_class == 3:
+            #     seg0 = self.Tensor(seg0)
+            #
+            # seg1 = self.Tensor(seg1)
+            # seg2 = self.Tensor(seg2)
+            #
+            # if self.cfg.num_seg_class == 3:
+            #     seg_label = torch.stack((seg0[0], seg1[0], seg2[0]), 0)
+            # else:
+            #     seg_label = torch.stack((seg2[0], seg1[0]), 0)
 
         # if data['tape'] == 'depth':
         #
@@ -475,6 +479,8 @@ class AutoDriveDataset(Dataset):
             if isinstance(lane_label, np.ndarray):
                 lane_label = self.Tensor(lane_label)
 
+
+
             # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
             if lane_label.ndim == 2:
                 lane_label = lane_label.unsqueeze(0)
@@ -486,6 +492,9 @@ class AutoDriveDataset(Dataset):
         img = self.transform(img)
 
         task =data['tape']
+
+
+
 
         #1
         return img, target, path, shapes,task
@@ -522,11 +531,8 @@ class AutoDriveDataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         img, label, paths, shapes,task = zip(*batch)
-        print("coffate_fn 批次打包",task)
+        print("coffate_fn 批次打包",task[0])
         task = task [0]
-
-
-
 
         label_det, label_seg, label_depth = [], [], []
         has_det, has_seg, has_lane = False, False, False

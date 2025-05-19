@@ -2128,11 +2128,6 @@ class FPN_C2C12C131619(nn.Module):
 
     def forward(self, x):
         c1, c2, _ ,_, c12, c13, c16, c19 = x
-        print(f"c1: {c1.shape}")
-        print(f"c2: {c2.shape}")
-        print(f"c5: {c12.shape}")
-        print(f"c16: {c16.shape}")
-        print(f"c19: {c19.shape}")
         return c1,c2, c12 ,c16,c19
 
 
@@ -2174,8 +2169,8 @@ class seg_head(nn.Module):
 
     def forward(self, x):
         x=x.float()
-        if not self.training:  # inference
-            x = self.act(x)
+        # if not self.training:  # inference
+        #     x = self.act(x)
             
         return x
 

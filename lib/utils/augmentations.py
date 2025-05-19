@@ -175,6 +175,7 @@ def letterbox(combination, new_shape=(640, 640), color=(114, 114, 114), auto=Tru
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
     img, gray, line = combination
     shape = img.shape[:2]  # current shape [height, width]
+
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
 
@@ -209,7 +210,7 @@ def letterbox(combination, new_shape=(640, 640), color=(114, 114, 114), auto=Tru
     gray = cv2.copyMakeBorder(gray, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
     line = cv2.copyMakeBorder(line, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
     # print(img.shape)
-    
+
     combination = (img, gray, line)
     return combination, ratio, (dw, dh)
 

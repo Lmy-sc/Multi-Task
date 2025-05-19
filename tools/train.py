@@ -33,7 +33,15 @@ from lib.utils.utils import get_optimizer
 from lib.utils.utils import save_checkpoint
 from lib.utils.utils import create_logger, select_device
 from lib.utils import run_anchor
-
+from unitmodule.models.data_preprocessors import unit_module
+from mmengine.config import Config, DictAction
+import argparse
+import logging
+import os
+import os.path as osp
+import sys
+import os
+from mmengine.registry import MODELS
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train Multitask network')
@@ -119,8 +127,18 @@ def main():
     
     print("load model to device")
     model = get_net(cfg).to(device)
+
+    cfg1 = Config.fromfile('D:\Multi-task\Git\Multi-Task\lib\config//unitmodule//unitmodule.py')
+    unit_cfg = cfg1.model
+    model1 = MODELS.build(unit_cfg).to(device)
+    print("unitmodule=======",model1)
+
     criterion = get_loss(cfg, device, model)
-    optimizer = get_optimizer(cfg, model)
+    params = list(model1.parameters()) + list(model.parameters())
+    #params = list(model.parameters())
+    optimizer = get_optimizer(cfg, params)
+
+    #optimizer = get_optimizer(cfg, model)
 
     # load checkpoint model
     best_perf = 0.0
@@ -146,12 +164,18 @@ def main():
         )
         #加载完整模型（包括三任务分支）
         if os.path.exists(cfg.MODEL.PRETRAINED):
+            logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED1))
             logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED))
+            checkpoint1 = torch.load(cfg.MODEL.PRETRAINED1)
             checkpoint = torch.load(cfg.MODEL.PRETRAINED)
-            begin_epoch = checkpoint['epoch']
+
+            #begin_epoch = checkpoint['epoch']
+            begin_epoch = 60
             # best_perf = checkpoint['perf']
             last_epoch = checkpoint['epoch']
+            model1.load_state_dict(checkpoint1['state_dict'])
             model.load_state_dict(checkpoint['state_dict'])
+
             optimizer.load_state_dict(checkpoint['optimizer'])
             logger.info("=> loaded checkpoint '{}' (epoch {})".format(
                 cfg.MODEL.PRETRAINED, checkpoint['epoch']))
@@ -223,7 +247,8 @@ def main():
 
     # assign model params
     model.gr = 1.0
-    model.nc = 1
+    model.nc = 4
+    model.names = ['0', '1', '2', '3']
     # print('bulid model finished')
 
     print("begin to load data")
@@ -291,12 +316,13 @@ def main():
     # training
     num_warmup = max(round(cfg.TRAIN.WARMUP_EPOCHS * num_batch), 1000)
     scaler = amp.GradScaler(enabled=device.type != 'cpu')
+    # scaler = torch.cuda.amp.GradScaler()
     print('=> start training...')
     for epoch in range(begin_epoch+1, cfg.TRAIN.END_EPOCH+1):
         if rank != -1:
             train_loader.sampler.set_epoch(epoch)
         # train for one epoch
-        train(cfg, train_loader, model, criterion, optimizer, scaler,
+        train(cfg, train_loader, model, model1,criterion, optimizer, scaler,
               epoch, num_batch, num_warmup, writer_dict, logger, device, rank)
 
         lr_scheduler.step()
@@ -305,7 +331,7 @@ def main():
         if (epoch % cfg.TRAIN.VAL_FREQ == 0 or epoch == cfg.TRAIN.END_EPOCH or epoch in list(range(181,200)) or epoch in [162, 165, 167, 170, 172, 175, 178]) and rank in [-1, 0]:
             # print('validate')
             da_segment_results,ll_segment_results,detect_results, total_loss,maps, times = validate(
-                epoch,cfg, valid_loader, valid_dataset, model, criterion,
+                epoch,cfg, valid_loader, valid_dataset, model,model1, criterion,
                 final_output_dir, tb_log_dir, writer_dict,
                 logger, device, rank
             )
@@ -327,16 +353,36 @@ def main():
         # if rank in [-1, 0]:
             savepath = os.path.join(final_output_dir, f'epoch-{epoch}.pth')
             logger.info('=> saving checkpoint to {}'.format(savepath))
+
+            savepath1 = os.path.join(final_output_dir, f'epoch-{epoch}_model1.pth')
+            logger.info('=> saving checkpoint of model1 to {}'.format(savepath1))
             save_checkpoint(
                 epoch=epoch,
-                name=cfg.MODEL.NAME,
-                model=model,
-                # 'best_state_dict': model.module.state_dict(),
-                # 'perf': perf_indicator,
+                name=cfg.MODEL.NAME + '_model1',
+                model=model1,
                 optimizer=optimizer,
                 output_dir=final_output_dir,
-                filename=f'epoch-{epoch}.pth'
+                filename=f'epoch-{epoch}_model1.pth'
             )
+            save_checkpoint(
+                epoch=epoch,
+                name=cfg.MODEL.NAME + '_model1',
+                model=model1,
+                optimizer=optimizer,
+                output_dir=os.path.join(cfg.LOG_DIR, cfg.DATASET.DATASET),
+                filename='checkpoint_model1.pth'
+            )
+
+            save_checkpoint(
+                    epoch=epoch,
+                    name=cfg.MODEL.NAME,
+                    model=model,
+                    # 'best_state_dict': model.module.state_dict(),
+                    # 'perf': perf_indicator,
+                    optimizer=optimizer,
+                    output_dir=final_output_dir,
+                    filename=f'epoch-{epoch}.pth'
+                )
             save_checkpoint(
                 epoch=epoch,
                 name=cfg.MODEL.NAME,

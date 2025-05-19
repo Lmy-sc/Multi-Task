@@ -194,7 +194,8 @@ class SegmentationMetric(object):
         # acc = (TP + TN) / (TP + TN + FP + TN)
         acc = np.diag(self.confusionMatrix).sum() /  self.confusionMatrix.sum()
         return acc
-        
+
+    #erfenlei
     def lineAccuracy(self):
         Acc = np.diag(self.confusionMatrix) / (self.confusionMatrix.sum(axis=1) + 1e-12)
         return Acc[1]

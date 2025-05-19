@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import json
 from lib.config import cfg
@@ -14,9 +16,149 @@ class BddDataset(AutoDriveDataset):
         self.db = self._get_db()
         self.cfg = cfg
 
+    # def _get_db(self):
+    #     print('building database...')
+    #     print('bdd进入')
+    #     gt_db = []
+    #     height, width = self.shapes
+    #     det_db, seg_db, depth_db = [], [], []
+
+        # ===================== 1. detection dataset =====================
+        # if hasattr(self, "det_list"):
+        #     mask_path=None
+        #     lane_path=None
+        #
+        #     coco_json_path =self.det_list[0]
+        #     print("detlist=========",self.det_list)
+        #     print(coco_json_path)
+        #
+        #     with open(coco_json_path, 'r') as f:
+        #         coco = json.load(f)
+        #
+        #     # COCO格式索引构建
+        #     images = {img['id']: img for img in coco['images']}
+        #     ann_by_image = {}
+        #     for ann in coco['annotations']:
+        #         img_id = ann['image_id']
+        #         if img_id not in ann_by_image:
+        #             ann_by_image[img_id] = []
+        #         ann_by_image[img_id].append(ann)
+        #
+        #     # 类别映射表（如果没有提供就默认COCO的原始映射）
+        #     if id_dict is None:
+        #         id_map = {cat['id']: cat['id'] for cat in coco['categories']}
+        #
+        #     # 构建rec列表
+        #     rec_list = []
+        #
+        #     for img_id, img_info in tqdm(images.items(), desc="Parsing COCO annotations"):
+        #         file_name = img_info['file_name']
+        #         width = img_info['width']
+        #         height = img_info['height']
+        #         image_path = os.path.join(self.img_root1, file_name)
+        #
+        #         anns = ann_by_image.get(img_id, [])
+        #         gt = np.zeros((len(anns), 5))
+        #
+        #         for idx, ann in enumerate(anns):
+        #             coco_cat_id = ann['category_id']
+        #             cls_id = id_map.get(coco_cat_id, None)
+        #             if cls_id is None:
+        #                 continue
+        #             if single_cls:
+        #                 cls_id = 0
+        #             x, y, w, h = ann['bbox']
+        #             cx = (x + x + w) / 2 / width
+        #             cy = (y + y + h) / 2 / height
+        #             bw = w / width
+        #             bh = h / height
+        #             gt[idx][0] = cls_id
+        #             gt[idx][1:] = [cx, cy, bw, bh]
+        #
+        #     # for label_path in tqdm(self.det_list, desc="Loading detection"):
+        #     #     print(label_path)
+        #     #     image_path = str(label_path).replace(str(self.label_root), str(self.img_root1)).replace(".json", ".jpg")
+        #     #     mask_path = None
+        #     #     lane_path = None
+        #     #
+        #     #     with open(label_path, 'r') as f:
+        #     #         label = json.load(f)
+        #     #
+        #     #     data = label['frames'][0]['objects']
+        #     #     data = self.filter_data(data)
+        #     #     gt = np.zeros((len(data), 5))
+        #     #     for idx, obj in enumerate(data):
+        #     #         category = obj['category']
+        #     #         if category == "traffic light":
+        #     #             color = obj['attributes']['trafficLightColor']
+        #     #             category = "tl_" + color
+        #     #         if category in id_dict.keys():
+        #     #             x1 = float(obj['box2d']['x1'])
+        #     #             y1 = float(obj['box2d']['y1'])
+        #     #             x2 = float(obj['box2d']['x2'])
+        #     #             y2 = float(obj['box2d']['y2'])
+        #     #             cls_id = id_dict[category]
+        #     #             if single_cls:
+        #     #                 cls_id = 0
+        #     #             gt[idx][0] = cls_id
+        #     #             box = convert((width, height), (x1, x2, y1, y2))
+        #     #             gt[idx][1:] = list(box)
+        #
+        #
+        #             rec = [{
+        #                 'image': image_path,
+        #                 'label': gt,
+        #                 'mask': mask_path,
+        #                 'lane': lane_path,
+        #                 'tape': 'detect'
+        #             }]
+        #             det_db += rec
+        #         #gt_db += rec
+        #
+        # # ===================== 2. segmentation dataset =====================
+        # if hasattr(self, "seg_list"):
+        #     for mask_path in tqdm(self.seg_list, desc="Loading segmentation"):
+        #         image_path = str(mask_path).replace(str(self.mask_root), str(self.img_root2)).replace(".bmp", ".jpg")
+        #         rec = [{
+        #             'image': image_path,
+        #             'label': None,
+        #             'mask': str(mask_path),
+        #             'lane': None,
+        #             'tape': 'seg'
+        #         }]
+        #         seg_db+= rec
+        #
+        # # ===================== 3. lane line dataset =====================
+        # if hasattr(self, "lane_list"):
+        #     for lane_path in tqdm(self.lane_list, desc="Loading lane line"):
+        #         image_path = str(lane_path).replace(str(self.lane_root), str(self.img_root3)).replace(".png", ".jpg")
+        #         rec = [{
+        #             'image': image_path,
+        #             'label': None,
+        #             'mask': None,
+        #             'lane': str(lane_path),
+        #             'tape': 'depth'
+        #         }]
+        #         depth_db+= rec
+        #
+        #
+        # batch_size = cfg.TRAIN.BATCH_SIZE_PER_GPU
+        # max_len = max(len(det_db), len(seg_db), len(depth_db))
+        #
+        #
+        #
+        # for i in range(0, max_len, batch_size):
+        #     if i  < len(det_db):
+        #         gt_db += det_db[i:i + batch_size]
+        #     if i  < len(seg_db):
+        #         gt_db += seg_db[i:i + batch_size]
+        #     if i  < len(depth_db):
+        #         gt_db += depth_db[i:i + batch_size]
+        #
+        # print('database build finish')
+        # return gt_db
     def _get_db(self):
         print('building database...')
-        print('bdd进入')
         gt_db = []
         height, width = self.shapes
         det_db, seg_db, depth_db = [], [], []
@@ -26,44 +168,36 @@ class BddDataset(AutoDriveDataset):
 
             for label_path in tqdm(self.det_list, desc="Loading detection"):
                 print(label_path)
-                image_path = str(label_path).replace(str(self.label_root), str(self.img_root1)).replace(".json", ".jpg")
+                image_path = str(label_path).replace(str(self.label_root), str(self.img_root1)).replace(".txt", ".jpg")
                 mask_path = None
                 lane_path = None
 
                 with open(label_path, 'r') as f:
-                    label = json.load(f)
+                    lines = f.readlines()
 
-                data = label['frames'][0]['objects']
-                data = self.filter_data(data)
-                gt = np.zeros((len(data), 5))
-                for idx, obj in enumerate(data):
-                    category = obj['category']
-                    if category == "traffic light":
-                        color = obj['attributes']['trafficLightColor']
-                        category = "tl_" + color
-                    if category in id_dict.keys():
-                        x1 = float(obj['box2d']['x1'])
-                        y1 = float(obj['box2d']['y1'])
-                        x2 = float(obj['box2d']['x2'])
-                        y2 = float(obj['box2d']['y2'])
-                        cls_id = id_dict[category]
-                        if single_cls:
-                            cls_id = 0
-                        gt[idx][0] = cls_id
-                        box = convert((width, height), (x1, x2, y1, y2))
-                        gt[idx][1:] = list(box)
+                gt = np.zeros((len(lines), 5))  # 每行为一个目标，共5列
+                for idx, line in enumerate(lines):
+                    items = line.strip().split()
+                    cls_id = int(items[0])
+                    cx = float(items[1])
+                    cy = float(items[2])
+                    w = float(items[3])
+                    h = float(items[4])
+
+                    gt[idx][0] = cls_id
+                    gt[idx][1:] = [cx, cy, w, h]
 
                 rec = [{
-                    'image': image_path,
-                    'label': gt,
-                    'mask': mask_path,
-                    'lane': lane_path,
-                    'tape': 'detect'
+                        'image': image_path,
+                        'label': gt,
+                        'mask': mask_path,
+                        'lane': lane_path,
+                        'tape': 'detect'
                 }]
                 det_db += rec
-                #gt_db += rec
+        #         #gt_db += rec
 
-        # ===================== 2. segmentation dataset =====================
+#        ===================== 2. segmentation dataset =====================
         if hasattr(self, "seg_list"):
             for mask_path in tqdm(self.seg_list, desc="Loading segmentation"):
                 image_path = str(mask_path).replace(str(self.mask_root), str(self.img_root2)).replace(".bmp", ".jpg")
@@ -91,94 +225,60 @@ class BddDataset(AutoDriveDataset):
 
 
         batch_size = cfg.TRAIN.BATCH_SIZE_PER_GPU
-        max_len = max(len(det_db), len(seg_db), len(depth_db))
+
+        # depth_db = self.align_db(depth_db, batch_size)
+        # len1 = int(max(len(det_db), len(seg_db), len(depth_db)))
+        # for i in tqdm(range(0, len1, batch_size), desc="Building gt_db"):
+        #     if i < len(depth_db):
+        #         gt_db += depth_db[i:i + batch_size]
 
 
+        det_db = self.align_db(det_db, batch_size)
+        seg_db = self.align_db(seg_db, batch_size)
+        depth_db = self.align_db(depth_db, batch_size)
 
-        for i in range(0, max_len, batch_size):
-            if i  < len(det_db):
+        #max_len = max(len(det_db), len(seg_db), len(depth_db))
+
+        self.cfg.Train.Batchnum=min(len(det_db), len(seg_db), len(depth_db))
+        len1 = max(len(det_db), len(seg_db), len(depth_db))
+
+
+        for i in tqdm(range(0, len1, batch_size), desc="Building gt_db"):
+            if i < len(det_db):
                 gt_db += det_db[i:i + batch_size]
-            if i  < len(seg_db):
+            if i < len(seg_db):
                 gt_db += seg_db[i:i + batch_size]
-            if i  < len(depth_db):
+            if i < len(depth_db):
                 gt_db += depth_db[i:i + batch_size]
+
+
+
+        # for i in range(0, len1, batch_size):
+        #     if i  < len(det_db):
+        #         gt_db += det_db[i:i + batch_size]
+        #     if i  < len(seg_db):
+        #         gt_db += seg_db[i:i + batch_size]
+        #     if i  < len(depth_db):
+        #         gt_db += depth_db[i:i + batch_size]
 
         print('database build finish')
         return gt_db
 
-    # def _get_db(self):
-    #     """
-    #     get database from the annotation file
-    #
-    #     Inputs:
-    #
-    #     Returns:
-    #     gt_db: (list)database   [a,b,c,...]
-    #             a: (dictionary){'image':, 'information':, ......}
-    #     image: image path
-    #     mask: path of the segmetation label
-    #     label: [cls_id, center_x//256, center_y//256, w//256, h//256] 256=IMAGE_SIZE
-    #     """
-    #     print('building database...')
-    #     gt_db = []
-    #     height, width = self.shapes
-    #     # for mask in tqdm(list(self.mask_list)[0:200] if self.is_train==True else list(self.mask_list)[0:30]):
-    #     # for mask in tqdm(list(self.mask_list)[0:20000] if self.is_train==True else list(self.mask_list)[0:3000]):
-    #
-    #
-    #     for mask in tqdm(list(self.mask_list)):
-    #         mask_path = str(mask)
-    #         label_path = mask_path.replace(str(self.mask_root), str(self.label_root)).replace(".png", ".json")
-    #         image_path = mask_path.replace(str(self.mask_root), str(self.img_root)).replace(".png", ".jpg")
-    #         lane_path = mask_path.replace(str(self.mask_root), str(self.lane_root))
-    #         print(mask_path,label_path,image_path,lane_path )
-    #         with open(label_path, 'r') as f:
-    #             label = json.load(f)
-    #
-    #         #获取第一个 frame 的所有 objects（因为每个 json 通常只标注一个 frame）。
-    #         data = label['frames'][0]['objects']
-    #         data = self.filter_data(data)
-    #         gt = np.zeros((len(data), 5))
-    #         for idx, obj in enumerate(data):
-    #
-    #             category = obj['category']
-    #             if category == "traffic light":
-    #                 color = obj['attributes']['trafficLightColor']
-    #                 category = "tl_" + color
-    #             if category in id_dict.keys():
-    #                 x1 = float(obj['box2d']['x1'])
-    #                 y1 = float(obj['box2d']['y1'])
-    #                 x2 = float(obj['box2d']['x2'])
-    #                 y2 = float(obj['box2d']['y2'])
-    #                 cls_id = id_dict[category]
-    #                 if single_cls:
-    #                      cls_id=0
-    #                 gt[idx][0] = cls_id
-    #                 box = convert((width, height), (x1, x2, y1, y2))
-    #                 gt[idx][1:] = list(box)
-    #
-    #
-    #         rec = [{
-    #             'image': image_path,
-    #             'label': gt,
-    #             'mask': mask_path,
-    #             'lane': lane_path
-    #         }]
-    #
-    #         gt_db += rec
-    #     print('database build finish')
-    #     return gt_db
+    def align_db(self,db, batch_size):
+        n = len(db)
+        aligned_n = (n // batch_size) * batch_size  # 向下取整
+        return db[:aligned_n]
 
-    def filter_data(self, data):
-        remain = []
-        for obj in data:
-            if 'box2d' in obj.keys():  # obj.has_key('box2d'):
-                if single_cls:
-                    if obj['category'] in id_dict_single.keys():
-                        remain.append(obj)
-                else:
-                    remain.append(obj)
-        return remain
+    # def filter_data(self, data):
+    #     remain = []
+    #     for obj in data:
+    #         if 'box2d' in obj.keys():  # obj.has_key('box2d'):
+    #             if single_cls:
+    #                 if obj['category'] in id_dict_single.keys():
+    #                     remain.append(obj)
+    #             else:
+    #                 remain.append(obj)
+    #     return remain
 
     def evaluate(self, cfg, preds, output_dir, *args, **kwargs):
         """  

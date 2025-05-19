@@ -39,6 +39,64 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True):
     area_i = torch.prod(br - tl, 2) * en  # * ((tl < br).all())
     return area_i / (area_a[:, None] + area_b - area_i)
 
+
+import cv2
+import os
+import numpy as np
+import torch
+
+
+import os
+import cv2
+import numpy as np
+import torch
+
+def draw_gt_pred(img_tensor, gt_boxes, gt_classes, pred_boxes=None, pred_classes=None, pred_scores=None, save_path=None, prefix="img"):
+    # 将张量转为 NumPy 数组
+    img = img_tensor.permute(1, 2, 0).cpu().numpy()
+    img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+
+    # 复制原图作为两个图像，分别绘制 GT 和预测框
+    img_gt = img.copy()
+    img_pred = img.copy()
+
+    # 画 GT 框（绿色），同时加上类别标签
+    for i, box in enumerate(gt_boxes):
+        cx, cy, w, h = box.detach().cpu().numpy()
+        cls = gt_classes[i]  # 获取类别
+        x1 = int(cx - w / 2)
+        y1 = int(cy - h / 2)
+        x2 = int(cx + w / 2)
+        y2 = int(cy + h / 2)
+        cv2.rectangle(img_gt, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img_gt, f"GT_{cls.item()}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # 画预测框（蓝色），同时加上类别标签和得分
+    if pred_boxes is not None:
+        for i, box in enumerate(pred_boxes):
+            cx, cy, w, h = box.detach().cpu().numpy()
+            cls = pred_classes[i]  # 获取类别
+            score = float(pred_scores[i].detach().cpu()) if pred_scores is not None else 1.0
+            x1 = int(cx - w / 2)
+            y1 = int(cy - h / 2)
+            x2 = int(cx + w / 2)
+            y2 = int(cy + h / 2)
+            cv2.rectangle(img_pred, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(img_pred, f"{cls.item()}:{score:.2f}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+    # 拼接 GT 和预测图像（左侧是 GT，右侧是预测）
+    combined_img = np.hstack((img_gt, img_pred))
+
+    # 保存对比图
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        cv2.imwrite(os.path.join(save_path, f"{prefix}_combined.jpg"), cv2.cvtColor(combined_img, cv2.COLOR_RGB2BGR))
+
+    return combined_img  # 返回合成图像
+
+
+
+
 class YOLOX_Loss(nn.Module):
     def __init__(
         self,
@@ -61,12 +119,15 @@ class YOLOX_Loss(nn.Module):
         self.grids = [torch.zeros(1)] * len(in_channels)
 
     def forward(self, pred, labels=None, imgs=None):
+
+
         outputs = []
         origin_preds = []
         x_shifts = []
         y_shifts = []
         expanded_strides = []
         for k, (stride_this_level, x) in enumerate(
+
             zip(self.strides, pred)
         ):
 
@@ -104,6 +165,7 @@ class YOLOX_Loss(nn.Module):
             yv, xv = meshgrid([torch.arange(hsize), torch.arange(wsize)])
             grid = torch.stack((xv, yv), 2).view(1, 1, hsize, wsize, 2).type(dtype)
             self.grids[k] = grid
+
 
         output = output.view(batch_size, self.n_anchors, n_ch, hsize, wsize)
         output = output.permute(0, 1, 3, 4, 2).reshape(
@@ -150,6 +212,8 @@ class YOLOX_Loss(nn.Module):
 
         # each image
         for batch_idx in range(outputs.shape[0]):
+
+
             num_gt = int(nlabel[batch_idx])
             num_gts += num_gt
             if num_gt == 0:
@@ -221,6 +285,8 @@ class YOLOX_Loss(nn.Module):
                         "cpu",
                     )
 
+
+
                 torch.cuda.empty_cache()
                 num_fg += num_fg_img
 
@@ -229,6 +295,17 @@ class YOLOX_Loss(nn.Module):
                 ) * pred_ious_this_matching.unsqueeze(-1)
                 obj_target = fg_mask.unsqueeze(-1)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
+
+                # draw_gt_pred(
+                #     img_tensor=imgs[batch_idx],
+                #     gt_boxes=labels[batch_idx, :num_gt, 1:5],  # [num_gt, 4]
+                #     gt_classes= labels[batch_idx, :num_gt, 0],
+                #     pred_boxes=bbox_preds[batch_idx][fg_mask], # [num_fg, 4]
+                #     pred_classes=cls_preds[batch_idx].argmax(dim=-1)[fg_mask],
+                #     pred_scores=obj_preds[batch_idx][fg_mask].squeeze(-1),  # [num_fg]
+                #     save_path="D:\Multi-task\Git\Multi-Task\inference\detect",
+                #     prefix=f"batch{batch_idx}"
+                # )
 
             cls_targets.append(cls_target)
             reg_targets.append(reg_target)
@@ -251,17 +328,17 @@ class YOLOX_Loss(nn.Module):
             self.focalloss(obj_preds.view(-1, 1), obj_targets)
         ).sum() / num_fg
         
-        loss_cls = 0.0
-        # loss_cls = (
-        #     self.bcewithlog_loss(
-        #         cls_preds.view(-1, self.num_classes)[fg_masks], cls_targets
-        #     )
-        # ).sum() / num_fg
+        #loss_cls = 0.0
+        loss_cls = (
+            self.bcewithlog_loss(
+                cls_preds.view(-1, self.num_classes)[fg_masks], cls_targets
+            )
+        ).sum() / num_fg
 
         loss_l1 = 0.0
 
         reg_weight = 5.0
-        loss = reg_weight * loss_iou + loss_obj
+        loss = reg_weight * loss_iou + loss_obj + loss_cls
         # loss = reg_weight * loss_iou + loss_obj + loss_cls + loss_l1
         # print(loss_iou)
         # print(loss_obj)
@@ -419,6 +496,7 @@ class YOLOX_Loss(nn.Module):
             .unsqueeze(1)
             .repeat(1, total_num_anchors)
         )
+
 
         b_l = x_centers_per_image - gt_bboxes_per_image_l
         b_r = gt_bboxes_per_image_r - x_centers_per_image

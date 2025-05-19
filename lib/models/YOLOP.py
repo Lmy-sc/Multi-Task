@@ -39,7 +39,7 @@ YOLOP = [
 [ -1, PaFPNELAN, []],   #1
 
 ###### Detect Head
-[ -1, YOLOXHead,  [1]], #2 #Detection head
+[ -1, YOLOXHead,  [4]], #2 #Detection head
 
 # ###### 渐进式上采样
 [ 1, FPN_C3, []],   #3
@@ -54,10 +54,10 @@ YOLOP = [
 [ -1, Conv, [64, 32, 3, 1]], 
 [ -1, Upsample, [None, 2, 'bilinear']], 
 [ -1, Conv, [32, 16, 3, 1]], 
-[ -1, ELANBlock_Head, [16, 8]], 
+[ -1, ELANBlock_Head, [16, 16]],
 [ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [8, 2, 3, 1]], 
-[ -1, seg_head, ['sigmoid']],  #16 segmentation head
+[ -1, Conv, [16, 8, 3, 1]],
+[ -1, seg_head, ['softmax']],  #16 segmentation head
 
 # # no use C2
 ###########
@@ -216,7 +216,7 @@ class MCnet(nn.Module):
             run_idx = backbone_neck_idx + ll_seg_idx
         else:
             raise ValueError(f"Unknown task: {task}")
-
+        print(task)
         for i, block in enumerate(self.model):
             if i not in run_idx:
                 cache.append(None)
@@ -229,7 +229,7 @@ class MCnet(nn.Module):
             else:
                 x_in = x
 
-            print(i,task)
+
             x = block(x_in)
 
             # 保存输出结果

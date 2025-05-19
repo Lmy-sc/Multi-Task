@@ -95,15 +95,17 @@ def box_iou(box1, box2):
     inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
-def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, labels=()):
+def non_max_suppression(prediction, conf_thres=0.4, iou_thres=0.5, classes=None, agnostic=False, labels=()):
     """Performs Non-Maximum Suppression (NMS) on inference results
-
+    conf_thres=0.25, iou_thres=0.45
     Returns:
          detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
     """
 
     # torch.cat(z, 1) =  b, 3*h*w, 6
-    nc = prediction.shape[2] - 5  # number of classes
+    print(prediction.shape[2])
+    # nc = prediction.shape[2] - 5  # number of classes
+    nc = prediction.shape[2]-5 # number of classes
     xc = prediction[..., 4] > conf_thres  # candidates
 
     # Settings
@@ -253,6 +255,22 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
     if isinstance(targets, torch.Tensor):
         targets = targets.cpu().numpy()
 
+    # mean = [0.485, 0.456, 0.406],
+    # std = [0.229, 0.224, 0.225]
+    #
+    # for i in range(images.shape[0]):
+    #     for c in range(3):  # RGB 三个通道
+    #         images[i, c, :, :] = images[i, c, :, :] * std[c] + mean[c]
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
+    if isinstance(images, torch.Tensor):
+        images = images.cpu().numpy()
+
+    images = images * std + mean  # 反归一化
+    images = np.clip(images * 255.0, 0, 255).astype(np.uint8)
+    #images = images.transpose(0, 2, 3, 1)  # (B, 3, H, W) → (B, H, W, 3)
+
     # un-normalise
     if np.max(images[0]) <= 1:
         images *= 255
@@ -283,12 +301,15 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
             img = cv2.resize(img, (w, h))
 
         mosaic[block_y:block_y + h, block_x:block_x + w, :] = img
-        if len(targets) > 0:
-            image_targets = targets[targets[:, 0] == i]
-            boxes = xywh2xyxy(image_targets[:, 2:6]).T
-            classes = image_targets[:, 1].astype('int')
-            labels = image_targets.shape[1] == 6  # labels if no conf column
-            conf = None if labels else image_targets[:, 6]  # check for confidence presence (label vs pred)
+        if len(targets[i]) > 0:
+            image_targets = targets[i]
+            #image_targets = targets[targets[:, 0] == i]
+            if image_targets.ndim == 1:
+                image_targets = image_targets[np.newaxis, :]
+            boxes = xywh2xyxy(image_targets[:, 1:5]).T
+            classes = image_targets[:, 0].astype('int')
+            labels = image_targets.shape[1] == 5  # labels if no conf column
+            conf = None if labels else image_targets[:, 5]  # check for confidence presence (label vs pred)
 
             if boxes.shape[1]:
                 if boxes.max() <= 1.01:  # if normalized with tolerance 0.01
@@ -328,7 +349,8 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
-    cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    #cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    cv2.rectangle(img, c1, c2, color, tl, cv2.LINE_AA)
     if label:
         tf = max(tl - 1, 1)  # font thickness
         t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
@@ -338,8 +360,19 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
 
 def color_list():
     # Return first 10 plt colors as (r,g,b) https://stackoverflow.com/questions/51350872/python-from-color-name-to-rgb
+
+    # def hex2rgb(h):
+    #     return tuple(int(str(h[1 + i:1 + i + 2]), 16) for i in (0, 2, 4))
+
     def hex2rgb(h):
-        return tuple(int(str(h[1 + i:1 + i + 2]), 16) for i in (0, 2, 4))
+        # 如果已经是RGB元组（浮点数形式），直接返回
+        if isinstance(h, tuple) and len(h) == 3 and all(0 <= x <= 1 for x in h):
+            return tuple(int(x * 255) for x in h)  # 转换为 0-255 的整数值
+        # 如果是十六进制字符串 "#RRGGBB"，进行处理
+        elif isinstance(h, str) and h.startswith('#'):
+            return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+        else:
+            raise ValueError(f"Unrecognized color format: {h}")
 
     return [hex2rgb(h) for h in plt.rcParams['axes.prop_cycle'].by_key()['color']]
 
@@ -443,13 +476,23 @@ def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
          64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
     return x
 
+# def output_to_target(output):
+#     # Convert model output to target format [batch_id, class_id, x, y, w, h, conf]
+#     targets = []
+#     for i, o in enumerate(output):
+#         for *box, conf, cls in o.cpu().numpy():
+#             targets.append([i, cls, *list(*xyxy2xywh(np.array(box)[None])), conf])
+#     return np.array(targets)
 def output_to_target(output):
-    # Convert model output to target format [batch_id, class_id, x, y, w, h, conf]
+    # output 是 list，每个元素是一个 Tensor，shape 为 (N_i, 6)
     targets = []
     for i, o in enumerate(output):
+        img_targets = []
         for *box, conf, cls in o.cpu().numpy():
-            targets.append([i, cls, *list(*xyxy2xywh(np.array(box)[None])), conf])
-    return np.array(targets)
+            img_targets.append([cls, *list(*xyxy2xywh(np.array(box)[None])), conf])
+        targets.append(np.array(img_targets))  # 每张图像的目标列表
+    return targets  # list，长度为 batch_size，元素 shape 为 (N_i, 6)
+
 
 def plot_pr_curve(px, py, ap, save_dir='.', names=()):
     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
@@ -468,3 +511,257 @@ def plot_pr_curve(px, py, ap, save_dir='.', names=()):
     ax.set_ylim(0, 1)
     plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     fig.savefig(Path(save_dir) / 'precision_recall_curve.png', dpi=250)
+
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+
+
+id2color = {
+    0: (0, 0, 0),
+    1: (0, 0, 255),
+    2: (0, 255, 0),
+    3: (0, 255, 255),
+    4: (255, 0, 0),
+    5: (255, 0, 255),
+    6: (255, 255, 0),
+    7: (255, 255, 255),
+}
+
+
+def colorize_mask(mask):
+    """将类别掩码转换成RGB彩色图像"""
+    h, w = mask.shape
+    color_mask = np.zeros((h, w, 3), dtype=np.uint8)
+    for cls_id, color in id2color.items():
+        color_mask[mask == cls_id] = color
+    return color_mask
+
+def save_segmentation_visualizations(images, pred_logits, gt_masks, save_path="vis_results", max_images=20):
+   # os.makedirs(save_dir, exist_ok=True)
+    batch_size = images.shape[0]
+    num_show = min(batch_size, max_images)
+
+
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
+    if isinstance(images, torch.Tensor):
+        images = images.cpu().numpy()
+
+    images = images * std + mean  # 反归一化
+    images = np.clip(images * 255.0, 0, 255).astype(np.uint8)
+    for idx in range(num_show):
+        img = images[idx]
+        img = img.transpose(1, 2, 0)
+        img = (img * 255).astype(np.uint8) if img.max() <= 1 else img.astype(np.uint8)
+
+        pred_mask = torch.argmax(pred_logits[idx], dim=0).cpu().numpy()
+        gt_mask = gt_masks[idx].cpu().numpy()
+
+        pred_color = colorize_mask(pred_mask)
+        gt_color = colorize_mask(gt_mask)
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        titles = ["Original Image", "Prediction (Color)", "Ground Truth (Color)"]
+        images_to_show = [img, pred_color, gt_color]
+
+        for ax, title, vis_img in zip(axes, titles, images_to_show):
+            ax.set_title(title)
+            ax.imshow(vis_img)
+            ax.axis('off')
+
+        plt.tight_layout()
+        #save_path = os.path.join(save_dir, f"compare_{idx:03d}.png")
+        plt.savefig(save_path)
+        plt.close()
+        print(f"Saved: {save_path}")
+
+import matplotlib.cm as cm
+def save_depth_visualizations(images, pred_depths, gt_depths=None, save_path="vis_depth_results", max_images=20):
+    batch_size = images.shape[0]
+    num_show = min(batch_size, max_images)
+
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
+    if isinstance(images, torch.Tensor):
+        images = images.cpu().numpy()
+    images = images * std + mean  # 反归一化
+    images = np.clip(images * 255.0, 0, 255).astype(np.uint8)
+
+    for idx in range(num_show):
+        img = images[idx].transpose(1, 2, 0)
+
+        pred_depth = pred_depths[idx]
+        if isinstance(pred_depth, torch.Tensor):
+            pred_depth = pred_depth.squeeze().cpu().numpy()
+
+        # Normalize depth for visualization
+        pred_depth_vis = normalize_depth_for_display(pred_depth)
+
+        vis_list = [img, pred_depth_vis]
+        titles = ["Original Image", "Predicted Depth"]
+
+        if gt_depths is not None:
+            gt_depth = gt_depths[idx]
+            if isinstance(gt_depth, torch.Tensor):
+                gt_depth = gt_depth.squeeze().cpu().numpy()
+            gt_depth_vis = normalize_depth_for_display(gt_depth)
+            vis_list.append(gt_depth_vis)
+            titles.append("Ground Truth Depth")
+
+        fig, axes = plt.subplots(1, len(vis_list), figsize=(5 * len(vis_list), 5))
+        if len(vis_list) == 1:
+            axes = [axes]
+        for ax, title, vis_img in zip(axes, titles, vis_list):
+            ax.set_title(title)
+            if vis_img.ndim == 2:
+                ax.imshow(vis_img, cmap='gray')
+            else:
+                ax.imshow(vis_img)
+            ax.axis('off')
+
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
+
+def normalize_depth_for_display(depth, min_val=None, max_val=None):
+    """Normalize depth map for grayscale visualization."""
+    if min_val is None:
+        min_val = np.percentile(depth, 2)
+    if max_val is None:
+        max_val = np.percentile(depth, 98)
+    depth = np.clip((depth - min_val) / (max_val - min_val + 1e-8), 0, 1)
+    depth_gray = (depth * 255).astype(np.uint8)  # 灰度图像：单通道 [0, 255]
+    return depth_gray
+
+def save_raw_visualizations(images, pred, save_path="vis_results", max_images=20):
+   # os.makedirs(save_dir, exist_ok=True)
+    batch_size = images.shape[0]
+    num_show = min(batch_size, max_images)
+
+
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
+    if isinstance(images, torch.Tensor):
+        images = images.cpu().numpy()
+
+    images = images * std + mean  # 反归一化
+    images = np.clip(images * 255.0, 0, 255).astype(np.uint8)
+
+
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().numpy()
+
+    pred= pred * std + mean  # 反归一化
+    pred = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
+    for idx in range(num_show):
+        img = images[idx]
+        img = img.transpose(1, 2, 0)
+        img = (img * 255).astype(np.uint8) if img.max() <= 1 else img.astype(np.uint8)
+
+        pre = pred[idx]
+        pre = pre.transpose(1, 2, 0)
+        pre = (pre * 255).astype(np.uint8) if pre.max() <= 1 else pre.astype(np.uint8)
+
+
+        fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+        titles = ["Original Image", "Prediction (Color)", "Ground Truth (Color)"]
+        images_to_show = [img, pre]
+
+        for ax, title, vis_img in zip(axes, titles, images_to_show):
+            ax.set_title(title)
+            ax.imshow(vis_img)
+            ax.axis('off')
+
+        plt.tight_layout()
+        #save_path = os.path.join(save_dir, f"compare_{idx:03d}.png")
+        plt.savefig(save_path)
+        plt.close()
+        print(f"Saved: {save_path}")
+
+def flatten_grads(model):
+    return torch.cat([p.grad.detach().flatten() if p.grad is not None else torch.zeros_like(p.data).flatten()
+                      for p in model.parameters()])
+
+def write_grads_to_model(model, grad_tensor):
+    pointer = 0
+    for p in model.parameters():
+        if p.requires_grad:
+            numel = p.numel()
+            if p.grad is None:
+                p.grad = torch.zeros_like(p.data)
+            p.grad.data.copy_(grad_tensor[pointer:pointer + numel].view_as(p.data))
+            pointer += numel
+
+def pcgrad(task_grads_dict):
+    grads = list(task_grads_dict.values())
+    T = len(grads)
+    proj_grads = grads.copy()
+
+    for i in range(T):
+        # 随机选择与其他任务进行梯度投影
+        remaining_tasks = list(range(T))
+        remaining_tasks.remove(i)
+        random.shuffle(remaining_tasks)
+
+        for j in remaining_tasks:
+            gij = torch.dot(proj_grads[i], grads[j])  # 计算两个任务的梯度内积
+            if gij < 0:  # 如果梯度方向相反（内积小于0），则进行投影更新
+                proj_grads[i] -= (gij / grads[j].norm() ** 2) * grads[j]  # 调整任务i的梯度
+    # for i in range(T):
+    #     for j in range(T):
+    #         if i != j:
+    #             gij = torch.dot(proj_grads[i], grads[j])
+    #             if gij < 0:
+    #                 proj_grads[i] -= (gij / grads[j].norm()**2) * grads[j]
+
+    # 最终融合所有任务梯度（可改成加权或平均）
+    #final_grad = torch.stack(proj_grads, dim=0).mean(dim=0)
+    return proj_grads
+
+
+import torch
+import torch.nn as nn
+
+
+class UncertaintyWeighting(nn.Module):
+    def __init__(self, num_tasks):
+        """
+        初始化 UncertaintyWeighting 类。
+
+        参数:
+        num_tasks (int): 任务数目。
+        """
+        super(UncertaintyWeighting, self).__init__()
+        # 为每个任务定义 log-variance 参数，初始化为 0
+        self.log_vars = nn.Parameter(torch.zeros(num_tasks))  # 每个任务的 log(σ^2)
+
+    def forward(self, losses):
+        """
+        根据每个任务的损失和不确定性权重来计算总损失。
+
+        参数:
+        losses (list/tensor): 每个任务的损失（一般为 batch_size 对应的损失）。
+
+        返回:
+        total_loss: 加权后的总损失。
+        """
+        weighted_loss = 0.0
+        for i, loss in enumerate(losses):
+            # 计算当前任务的 precision (1/σ^2)
+            precision = torch.exp(-self.log_vars[i])
+            # 使用 precision（反映不确定性）加权损失
+            weighted_loss += precision * loss + self.log_vars[i]  # 加上 log(σ^2) 是为了正则化
+        return weighted_loss
+
+    def get_weights(self):
+        """
+        获取每个任务的当前权重（反映不确定性）。
+        """
+        return torch.exp(-self.log_vars)
+

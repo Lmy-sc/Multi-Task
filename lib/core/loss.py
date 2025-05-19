@@ -67,7 +67,7 @@ class MultiHeadLoss(nn.Module):
         #     device = targets[0].device
         # else:
         #     # 处理targets[0]为None的情况
-        device = torch.device('cuda')
+        device = torch.device('cuda:0')
 
         # device = targets[0].device
 
@@ -78,33 +78,43 @@ class MultiHeadLoss(nn.Module):
         depth_loss = torch.tensor(0., device=device)
         ll_tversky_loss = torch.tensor(0., device=device)
 
+
+
+
         # ComputeLossOTA
         if targets[0] is not None:
+
             det_all_loss = Det_loss(predictions[0], targets[0], imgs)
-            det_all_loss *= 0.02 * self.lambdas[1]
+
+            det_all_loss *= self.lambdas[1] #0.02
 
         # driving area BCE loss 
         # predictions[1] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
+
         if targets[1] is not None :
-            drive_area_seg_predicts = predictions[1].view(-1)
-        # target[1] = shape( B 2 H W ) , dim0=bg, dim1 = road
-            drive_area_seg_targets = targets[1].view(-1)
-
-            da_seg_loss = Da_Seg_Loss(drive_area_seg_predicts, drive_area_seg_targets)
-
-            da_seg_loss *= 0.2 * self.lambdas[2]
+        #     drive_area_seg_predicts = predictions[1].view(-1)
+        # # target[1] = shape( B 2 H W ) , dim0=bg, dim1 = road
+        #     drive_area_seg_targets = targets[1].view(-1)
+        #
+        #     da_seg_loss = Da_Seg_Loss(drive_area_seg_predicts, drive_area_seg_targets)
+        #
+        #     da_seg_loss *= 0.2 * self.lambdas[2]
+            #targets[1]=targets[1].long
+            loss_fn = torch.nn.CrossEntropyLoss()
+            da_seg_loss = loss_fn(predictions[1], targets[1])
 
         if targets[2] is not None:
             # lane line focal loss
             # predictions[2] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
 
-            dataset = False
+            dataset = True
             lpg8x8, lpg4x4, lpg2x2, reduc1x1, depth_est = predictions[2]
 
             if dataset:
-                mask = targets[2] > 0.1
+                mask = targets[2] > 0.11
             else:
                 mask = targets[2] > 1.0
+
 
 
             silog_criterion = silog_loss(variance_focus=0.85)
@@ -129,10 +139,11 @@ class MultiHeadLoss(nn.Module):
         #
         # ll_seg_loss *= 0.2 * self.lambdas[3]
         # ll_tversky_loss *= 0.2 * self.lambdas[4]
-        
-        loss = det_all_loss + da_seg_loss + depth_loss + depth_loss
 
-        return loss, (det_all_loss.item(), da_seg_loss.item(), depth_loss.item(), ll_tversky_loss.item(), loss.item())
+        loss = det_all_loss + da_seg_loss + depth_loss
+        print(f"det_loss,{det_all_loss}",f"seg_Loss,{da_seg_loss}",f"depth_loss,{depth_loss}")
+
+        return loss, (det_all_loss.item(), da_seg_loss.item(), depth_loss.item(), ll_tversky_loss.item(), loss.item()),
 
 
 def get_loss(cfg, device, model):
@@ -149,10 +160,13 @@ def get_loss(cfg, device, model):
 
     """
     # ComputeLossOTA
-    Det_loss = YOLOX_Loss(device, 1)
+
+    Det_loss = YOLOX_Loss(device, 4)
 
     # segmentation loss criteria
     Da_Seg_Loss = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([cfg.LOSS.SEG_POS_WEIGHT])).to(device)
+
+
 
     Ll_Seg_Loss = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([cfg.LOSS.SEG_POS_WEIGHT])).to(device)
 

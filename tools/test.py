@@ -1,5 +1,8 @@
 import argparse
 import os, sys
+
+from mmengine import Config, MODELS
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
@@ -36,7 +39,7 @@ def parse_args():
                         help='log directory',
                         type=str,
                         default='runs/')
-    parser.add_argument('--weights', nargs='+', type=str, default='runs/epoch-195.pth', help='model.pth path(s)')
+    parser.add_argument('--weights', nargs='+', type=str, default='D:\Multi-task\Git\Multi-Task/runs\epoch-195.pth', help='model.pth path(s)')
     parser.add_argument('--conf_thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou_thres', type=float, default=0.6, help='IOU threshold for NMS')
     args = parser.parse_args()
@@ -71,6 +74,10 @@ def main():
         else select_device(logger, 'cpu')
     # device = select_device(logger, 'cpu')
 
+    cfg1 = Config.fromfile('D:\Multi-task\Git\Multi-Task\lib\config//unitmodule//unitmodule.py')
+    unit_cfg = cfg1.model
+    model1 = MODELS.build(unit_cfg).to(device)
+
     model = get_net(cfg)
     print("finish build model")
 
@@ -80,19 +87,45 @@ def main():
     # load checkpoint model
 
     # det_idx_range = [str(i) for i in range(0,25)]
+    model_dict1 = model1.state_dict()
     model_dict = model.state_dict()
-    checkpoint_file = args.weights
-    logger.info("=> loading checkpoint '{}'".format(checkpoint_file))
-    checkpoint = torch.load(checkpoint_file)
+    #checkpoint_file = args.weights
+
+    logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED1))
+    logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED))
+    checkpoint1 = torch.load(cfg.MODEL.PRETRAINED1)
+    checkpoint = torch.load(cfg.MODEL.PRETRAINED)
+
+    begin_epoch = checkpoint['epoch']
+    # best_perf = checkpoint['perf']
+    last_epoch = checkpoint['epoch']
+    model1.load_state_dict(checkpoint1['state_dict'])
+    model.load_state_dict(checkpoint['state_dict'])
+
+    #optimizer.load_state_dict(checkpoint['optimizer'])
+    logger.info("=> loaded checkpoint '{}' (epoch {})".format(
+        cfg.MODEL.PRETRAINED, checkpoint['epoch']))
+    # cfg.NEED_AUTOANCHOR = False     #disable autoanchor
+    #logger.info("=> loading checkpoint '{}'".format(checkpoint_file))
+    #checkpoint = torch.load(checkpoint_file)
+
+    checkpoint_dict1 = checkpoint1['state_dict']
     checkpoint_dict = checkpoint['state_dict']
+    #checkpoint_dict = {k: v for k, v in checkpoint_dict.items() if k in model_dict and v.size() == model_dict[k].size()}
     # checkpoint_dict = {k: v for k, v in checkpoint['state_dict'].items() if k.split(".")[1] in det_idx_range}
     model_dict.update(checkpoint_dict)
+    model_dict1.update(checkpoint_dict1)
+
+    model1.load_state_dict(model_dict1)
     model.load_state_dict(model_dict)
-    logger.info("=> loaded checkpoint '{}' ".format(checkpoint_file))
+    logger.info("=> loaded checkpoint '{}' (epoch {})".format(
+        cfg.MODEL.PRETRAINED, checkpoint['epoch']))
+
 
     model = model.to(device)
+    model.names=['0','1','2','3']
     model.gr = 1.0
-    model.nc = 1
+    model.nc = 4
     print('bulid model finished')
 
     print("begin to load data")
@@ -119,11 +152,15 @@ def main():
         pin_memory=False,
         collate_fn=dataset.AutoDriveDataset.collate_fn
     )
+
+    # print('len(gt_db)', len(gt_db))
+
+
     print('load data finished')
 
     epoch = 0 #special for test
-    da_segment_results,ll_segment_results,detect_results, total_loss,maps, times = validate(
-        epoch,cfg, valid_loader, valid_dataset, model, criterion,
+    segment_results,depth_results,detect_results, total_loss,maps, times = validate(
+        epoch,cfg, valid_loader, valid_dataset, model, model1 ,criterion,
         final_output_dir, tb_log_dir, writer_dict,
         logger, device
     )
@@ -133,10 +170,25 @@ def main():
                       'Lane line Segment: Acc({ll_seg_acc:.3f})    IOU ({ll_seg_iou:.3f})  mIOU({ll_seg_miou:.3f})\n' \
                       'Detect: P({p:.3f})  R({r:.3f})  mAP@0.5({map50:.3f})  mAP@0.5:0.95({map:.3f})\n'\
                       'Time: inference({t_inf:.4f}s/frame)  nms({t_nms:.4f}s/frame)'.format(
-                          loss=total_loss, da_seg_acc=da_segment_results[0],da_seg_iou=da_segment_results[1],da_seg_miou=da_segment_results[2],
-                          ll_seg_acc=ll_segment_results[0],ll_seg_iou=ll_segment_results[1],ll_seg_miou=ll_segment_results[2],
+                          loss=total_loss, da_seg_acc=segment_results[0],da_seg_iou=segment_results[1],da_seg_miou=segment_results[2],
+                          ll_seg_acc=depth_results[0],ll_seg_iou=depth_results[1],ll_seg_miou=depth_results[2],
                           p=detect_results[0],r=detect_results[1],map50=detect_results[2],map=detect_results[3],
                           t_inf=times[0], t_nms=times[1])
+    # da_segment_results,ll_segment_results,detect_results, total_loss,maps, times = validate(
+    #     epoch,cfg, valid_loader, valid_dataset, model, model1 ,criterion,
+    #     final_output_dir, tb_log_dir, writer_dict,
+    #     logger, device
+    # )
+    # fi = fitness(np.array(detect_results).reshape(1, -1))
+    # msg =   'Test:    Loss({loss:.3f})\n' \
+    #         'Driving area Segment: Acc({da_seg_acc:.3f})    IOU ({da_seg_iou:.3f})    mIOU({da_seg_miou:.3f})\n' \
+    #                   'Lane line Segment: Acc({ll_seg_acc:.3f})    IOU ({ll_seg_iou:.3f})  mIOU({ll_seg_miou:.3f})\n' \
+    #                   'Detect: P({p:.3f})  R({r:.3f})  mAP@0.5({map50:.3f})  mAP@0.5:0.95({map:.3f})\n'\
+    #                   'Time: inference({t_inf:.4f}s/frame)  nms({t_nms:.4f}s/frame)'.format(
+    #                       loss=total_loss, da_seg_acc=da_segment_results[0],da_seg_iou=da_segment_results[1],da_seg_miou=da_segment_results[2],
+    #                       ll_seg_acc=ll_segment_results[0],ll_seg_iou=ll_segment_results[1],ll_seg_miou=ll_segment_results[2],
+    #                       p=detect_results[0],r=detect_results[1],map50=detect_results[2],map=detect_results[3],
+    #                       t_inf=times[0], t_nms=times[1])
     logger.info(msg)
     print("test finish")
 
