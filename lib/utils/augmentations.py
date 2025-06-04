@@ -65,14 +65,26 @@ def random_perspective(combination, targets=(), degrees=10, translate=.1, scale=
     # Combined rotation matrix
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
+        # if perspective:
+        #     img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+        #     gray = cv2.warpPerspective(gray, M, dsize=(width, height), borderValue=0)
+        #     line = cv2.warpPerspective(line, M, dsize=(width, height), borderValue=0)
+        # else:  # affine
+        #     img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+        #     gray = cv2.warpAffine(gray, M[:2], dsize=(width, height), borderValue=0)
+        #     line = cv2.warpAffine(line, M[:2], dsize=(width, height), borderValue=0)
         if perspective:
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
-            gray = cv2.warpPerspective(gray, M, dsize=(width, height), borderValue=0)
-            line = cv2.warpPerspective(line, M, dsize=(width, height), borderValue=0)
+            if gray is not None:
+                gray = cv2.warpPerspective(gray, M, dsize=(width, height), borderValue=0)
+            if line is not None:
+                line = cv2.warpPerspective(line, M, dsize=(width, height), borderValue=0)
         else:  # affine
             img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
-            gray = cv2.warpAffine(gray, M[:2], dsize=(width, height), borderValue=0)
-            line = cv2.warpAffine(line, M[:2], dsize=(width, height), borderValue=0)
+            if gray is not None:
+                gray = cv2.warpAffine(gray, M[:2], dsize=(width, height), borderValue=0)
+            if line is not None:
+                line = cv2.warpAffine(line, M[:2], dsize=(width, height), borderValue=0)
 
     # Visualize
     # import matplotlib.pyplot as plt
@@ -200,15 +212,25 @@ def letterbox(combination, new_shape=(640, 640), color=(114, 114, 114), auto=Tru
 
     if shape[::-1] != new_unpad:  # resize
         img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-        gray = cv2.resize(gray, new_unpad, interpolation=cv2.INTER_LINEAR)
-        line = cv2.resize(line, new_unpad, interpolation=cv2.INTER_LINEAR)
+        # gray = cv2.resize(gray, new_unpad, interpolation=cv2.INTER_LINEAR)
+        # line = cv2.resize(line, new_unpad, interpolation=cv2.INTER_LINEAR)
+        if gray is not None:
+            gray = cv2.resize(gray, new_unpad, interpolation=cv2.INTER_NEAREST)
+
+        if line is not None:
+            line = cv2.resize(line, new_unpad, interpolation=cv2.INTER_NEAREST)
 
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
 
     img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
-    gray = cv2.copyMakeBorder(gray, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
-    line = cv2.copyMakeBorder(line, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
+    # gray = cv2.copyMakeBorder(gray, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
+    # line = cv2.copyMakeBorder(line, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)  # add border
+    if gray is not None:
+        gray = cv2.copyMakeBorder(gray, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
+
+    if line is not None:
+        line = cv2.copyMakeBorder(line, top, bottom, left, right, cv2.BORDER_CONSTANT, value=0)
     # print(img.shape)
 
     combination = (img, gray, line)

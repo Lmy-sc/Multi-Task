@@ -1,4 +1,5 @@
 import os
+from operator import index
 
 import cv2
 import numpy as np
@@ -10,6 +11,7 @@ import torchvision.transforms as transforms
 from pathlib import Path
 from PIL import Image
 from fontTools.ttLib.tables.C_P_A_L_ import table_C_P_A_L_
+from numpy.ma.core import indices
 from torch.utils.data import Dataset
 from ..utils import letterbox, augment_hsv, random_perspective, xyxy2xywh, cutout
 import albumentations as A
@@ -121,8 +123,10 @@ class AutoDriveDataset(Dataset):
         # self.target_type = cfg.MODEL.TARGET_TYPE
         self.shapes = np.array(cfg.DATASET.ORG_IMG_SIZE)
 
-        self.mosaic_rate = cfg.mosaic_rate
-        self.mixup_rate = cfg.mixup_rate
+        # self.mosaic_rate = cfg.mosaic_rate
+        # self.mixup_rate = cfg.mixup_rate
+        self.mosaic_rate = 1
+        self.mixup_rate = 1
     
     def _get_db(self):
         """
@@ -150,8 +154,19 @@ class AutoDriveDataset(Dataset):
 
         yc = int(random.uniform(-self.mosaic_border[0], 2 * h_mosaic + self.mosaic_border[0])) # 192,3x192
         xc = int(random.uniform(-self.mosaic_border[1], 2 * w_mosaic + self.mosaic_border[1])) # 320,3x320
-        
-        indices = range(len(self.db))
+        task = self.db[0][idx]["tape"]
+        indices =[]
+        if task== 'detect':
+            indices=self.db[1]
+        elif task == 'seg':
+            indices=self.db[2]
+        elif task == 'depth':
+            indices = self.db[3]
+
+        if len(indices) < 3:
+            print(f"[Warning] Task '{task}' has too few samples ({len(indices)}) for mosaic augmentation")
+        #indices = range(len(self.db))
+        # leng = range (len(indices))
         indices = [idx] + random.choices(indices, k=3)  # 3 additional iWmage indices
                         
         random.shuffle(indices)
@@ -183,14 +198,15 @@ class AutoDriveDataset(Dataset):
                 x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-            if self.db[idx]["tape"]=='seg':
+
+            if self.db[0][idx]["tape"] == 'seg':
                 seg4[y1a:y2a, x1a:x2a] = seg_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-            if self.db[idx]["tape"] == 'depth':
+            if self.db[0][idx]["tape"] == 'depth':
                 lane4[y1a:y2a, x1a:x2a] = lane_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
 
             padw = x1a - x1b
             padh = y1a - y1b
-            if self.db[idx]["tape"] == 'detect':
+            if self.db[0][idx]["tape"] == 'detect':
                 if len(labels):
                     labels[:, 1] += padw
                     labels[:, 2] += padh
@@ -214,17 +230,37 @@ class AutoDriveDataset(Dataset):
         return img4, labels4, seg4, lane4, (h0, w0), (h, w), path
 
     # mixup：图像混合增强
-    def mixup(self, im, labels, seg_label, lane_label, im2, labels2, seg_label2, lane_label2 ):
+    def mixup(self, im, labels, seg_label, depth_label, im2, labels2, seg_label2, depth_label2 ,task):
         # Applies MixUp augmentation https://arxiv.org/pdf/1710.09412.pdf
+        labels_depth =None
+        seg_label_final =None
+        depth_label_final =None
         r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
         im = (im * r + im2 * (1 - r)).astype(np.uint8)
-        labels = np.concatenate((labels, labels2), 0)
-        seg_label |= seg_label2
-        lane_label |= lane_label2
-        return im, labels, seg_label, lane_label
+
+        def to_one_hot(mask, num_classes=8):
+            # mask: H x W, values in [0, num_classes-1]
+            return np.eye(num_classes)[mask]  # → H x W x C
+
+        if task == 'detect':
+            labels_depth = np.concatenate((labels, labels2), 0)
+
+        elif task == 'seg':
+            seg1 = to_one_hot(seg_label)  # H x W x C
+            seg2 = to_one_hot(seg_label2)  # H x W x C
+            seg_label_final = seg1 * r + seg2 * (1 - r)  # soft label
+            seg_label_final = np.argmax(seg_label_final, axis=-1).astype(np.uint8)  # H x W
+
+        elif task == 'depth':
+            depth_label_final = (depth_label > 0) & (depth_label > 0)
+            depth_label_final = np.where(depth_label_final, depth_label * r + depth_label * (1 - r), 0)
+
+        #seg_label |= seg_label2
+        #depth_label |= depth_label2
+        return im, labels_depth, seg_label_final, depth_label_final
 
     def load_image(self, idx):
-        data = self.db[idx]
+        data = self.db[0][idx]
         img = cv2.imread(data["image"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
 
         if img is None:
@@ -325,35 +361,78 @@ class AutoDriveDataset(Dataset):
         cv2.warpAffine
         """
 
-        data = self.db[idx]
+        data = self.db[0][idx]
+        task = data["tape"]
+        indices = []
+        if task == 'detect':
+            indices = self.db[1]
+        elif task == 'seg':
+            indices = self.db[2]
+        elif task == 'depth':
+            indices = self.db[3]
         if self.is_train:
-            # mosaic_this = False
-            # if random.random() < self.mosaic_rate:
-            #     mosaic_this = True
-            #     #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
-            #     #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
-            #     img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
-            #
-            #     # mixup is double mosaic, really slow
-            #     if random.random() < self.mixup_rate:
-            #         img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
-            #         img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2)
-            # else:
-            img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
+            mosaic_this = False
+            if random.random() < self.mosaic_rate:
+                mosaic_this = True
+                #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
+                #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
+                img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
+
+                # mixup is double mosaic, really slow
+                if random.random() < self.mixup_rate:
+                    # img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
+                    img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.choice(indices))
+                    img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2,task)
+            else:
+                img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
 
 
-            # try:
-            #     new = self.albumentations_transform(image=img, mask=seg_label, mask0=lane_label,
-            #                                         bboxes=labels[:, 1:] if len(labels) else labels,
-            #                                         class_labels=labels[:, 0] if len(labels) else labels)
-            #     img = new['image']
-            #     labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(labels) else labels
-            #     seg_label = new['mask']
-            #     lane_label = new['mask0']
-            # except ValueError:  # bbox have width or height == 0
-            #     pass
+            try:
+                # labels = None
+                # seg_label = None
+                # depth_label = None
+                if task == 'detect':
+                    new = self.albumentations_transform(image=img,
+                                                        bboxes=labels[:, 1:] if len(labels) else labels,
+                                                        class_labels=labels[:, 0] if len(labels) else labels)
+                    labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(
+                        labels) else labels
+                    img = new['image']
+                elif task == 'seg':
+                    new = self.albumentations_transform(image=img, mask=seg_label)
 
-            # combination = (img, seg_label, lane_label)
+                    seg_label = new['mask']
+                    img = new['image']
+                elif task == 'depth':
+                    new = self.albumentations_transform(image=img, depth=lane_label)
+
+                    lane_label = new['depth']
+                    img = new['image']
+
+
+
+
+
+            except ValueError:  # bbox have width or height == 0
+                pass
+
+            combination = (img, seg_label, lane_label)
+            # combination = [img]  # 必须用 list 方便过滤
+            # if seg_label is not None:
+            #     combination.append(seg_label)
+            # if lane_label is not None:
+            #     combination.append(lane_label)
+
+            combination, labels = random_perspective(
+                combination=combination,
+                targets=labels,
+                degrees=self.cfg.DATASET.ROT_FACTOR,
+                translate=self.cfg.DATASET.TRANSLATE,
+                scale=self.cfg.DATASET.SCALE_FACTOR,
+                shear=self.cfg.DATASET.SHEAR,
+                border=self.mosaic_border if mosaic_this else (0, 0)
+            )
+
             # (img, seg_label, lane_label), labels = random_perspective(
             #     combination=combination,
             #     targets=labels,
@@ -363,44 +442,48 @@ class AutoDriveDataset(Dataset):
             #     shear=self.cfg.DATASET.SHEAR,
             #     border=self.mosaic_border if mosaic_this else (0, 0)
             # )
-            #
-            # augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
+
+            # img = combination[0]
+            # seg_label = combination[1] if len(combination) > 1 else None
+            # lane_label = combination[2] if len(combination) > 2 else None
+
+            augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
 
             #random left-right flip
-        #     if random.random() < 0.5:
-        #         img = np.fliplr(img)
-        #
-        #         if len(labels):
-        #             rows, cols, channels = img.shape
-        #             x1 = labels[:, 1].copy()
-        #             x2 = labels[:, 3].copy()
-        #             x_tmp = x1.copy()
-        #             labels[:, 1] = cols - x2
-        #             labels[:, 3] = cols - x_tmp
-        #
-        #         if data['tape']=='seg':
-        #             seg_label = np.fliplr(seg_label)
-        #         if data['tape'] == 'depth':
-        #             lane_label = np.fliplr(lane_label)
-        #
-        #     # random up-down flip
-        #     if random.random() < 0.0:
-        #         img = np.flipud(img)
-        #
-        #         if len(labels):
-        #             rows, cols, channels = img.shape
-        #             y1 = labels[:, 2].copy()
-        #             y2 = labels[:, 4].copy()
-        #             y_tmp = y1.copy()
-        #             labels[:, 2] = rows - y2
-        #             labels[:, 4] = rows - y_tmp
-        #         if data['tape'] == 'seg':
-        #             seg_label = np.flipud(seg_label)
-        #         if data['tape'] == 'depth':
-        #             lane_label = np.flipud(lane_label)
-        #
-        # else:
-        img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
+            if random.random() < 0.5:
+                img = np.fliplr(img)
+
+                if len(labels):
+                    rows, cols, channels = img.shape
+                    x1 = labels[:, 1].copy()
+                    x2 = labels[:, 3].copy()
+                    x_tmp = x1.copy()
+                    labels[:, 1] = cols - x2
+                    labels[:, 3] = cols - x_tmp
+
+                if data['tape']=='seg':
+                    seg_label = np.fliplr(seg_label)
+                if data['tape'] == 'depth':
+                    lane_label = np.fliplr(lane_label)
+
+            # random up-down flip
+            if random.random() < 0.5:
+                img = np.flipud(img)
+
+                if len(labels):
+                    rows, cols, channels = img.shape
+                    y1 = labels[:, 2].copy()
+                    y2 = labels[:, 4].copy()
+                    y_tmp = y1.copy()
+                    labels[:, 2] = rows - y2
+                    labels[:, 4] = rows - y_tmp
+                if data['tape'] == 'seg':
+                    seg_label = np.flipud(seg_label)
+                if data['tape'] == 'depth':
+                    lane_label = np.flipud(lane_label)
+
+        else:
+            img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
 
 
         (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)

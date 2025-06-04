@@ -757,6 +757,7 @@ class UncertaintyWeighting(nn.Module):
             precision = torch.exp(-self.log_vars[i])
             # 使用 precision（反映不确定性）加权损失
             weighted_loss += precision * loss + self.log_vars[i]  # 加上 log(σ^2) 是为了正则化
+            print(f"after uw{i},{precision * loss + self.log_vars[i]}")
         return weighted_loss
 
     def get_weights(self):

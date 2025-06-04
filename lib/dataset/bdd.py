@@ -162,6 +162,7 @@ class BddDataset(AutoDriveDataset):
         gt_db = []
         height, width = self.shapes
         det_db, seg_db, depth_db = [], [], []
+        det_num,seg_num,depth_num =[],[],[]
 
         # ===================== 1. detection dataset =====================
         if hasattr(self, "det_list"):
@@ -195,7 +196,7 @@ class BddDataset(AutoDriveDataset):
                         'tape': 'detect'
                 }]
                 det_db += rec
-        #         #gt_db += rec
+                #gt_db += rec
 
 #        ===================== 2. segmentation dataset =====================
         if hasattr(self, "seg_list"):
@@ -213,7 +214,7 @@ class BddDataset(AutoDriveDataset):
         # ===================== 3. lane line dataset =====================
         if hasattr(self, "lane_list"):
             for lane_path in tqdm(self.lane_list, desc="Loading lane line"):
-                image_path = str(lane_path).replace(str(self.lane_root), str(self.img_root3)).replace(".png", ".jpg")
+                image_path = str(lane_path).replace(str(self.lane_root), str(self.img_root3)).replace(".png", ".png")
                 rec = [{
                     'image': image_path,
                     'label': None,
@@ -239,19 +240,35 @@ class BddDataset(AutoDriveDataset):
 
         #max_len = max(len(det_db), len(seg_db), len(depth_db))
 
-        self.cfg.Train.Batchnum=min(len(det_db), len(seg_db), len(depth_db))
-        len1 = max(len(det_db), len(seg_db), len(depth_db))
+        #self.cfg.Train.Batchnum=min(len(det_db), len(seg_db), len(depth_db))
+        len1 = min(len(det_db), len(seg_db), len(depth_db))
 
 
+        # for i in tqdm(range(0, len1, batch_size), desc="Building gt_db"):
+        #     if i < len(det_db):
+        #         gt_db += det_db[i:i + batch_size]
+        #         det_num.append(i)
+        #     if i < len(seg_db):
+        #         gt_db += seg_db[i:i + batch_size]
+        #         seg_num.append(i)
+        #     if i < len(depth_db):
+        #         gt_db += depth_db[i:i + batch_size]
+        #         depth_num.append(i)
         for i in tqdm(range(0, len1, batch_size), desc="Building gt_db"):
             if i < len(det_db):
-                gt_db += det_db[i:i + batch_size]
+                batch = det_db[i:i + batch_size]
+                det_num.extend(range(len(gt_db), len(gt_db) + len(batch)))
+                gt_db += batch
+
             if i < len(seg_db):
-                gt_db += seg_db[i:i + batch_size]
+                batch = seg_db[i:i + batch_size]
+                seg_num.extend(range(len(gt_db), len(gt_db) + len(batch)))
+                gt_db += batch
+
             if i < len(depth_db):
-                gt_db += depth_db[i:i + batch_size]
-
-
+                batch = depth_db[i:i + batch_size]
+                depth_num.extend(range(len(gt_db), len(gt_db) + len(batch)))
+                gt_db += batch
 
         # for i in range(0, len1, batch_size):
         #     if i  < len(det_db):
@@ -262,7 +279,9 @@ class BddDataset(AutoDriveDataset):
         #         gt_db += depth_db[i:i + batch_size]
 
         print('database build finish')
-        return gt_db
+        # return gt_db,det_db,seg_db,depth_db
+        return gt_db,det_num,seg_num,depth_num
+
 
     def align_db(self,db, batch_size):
         n = len(db)

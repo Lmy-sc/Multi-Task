@@ -111,7 +111,7 @@ class MultiHeadLoss(nn.Module):
             lpg8x8, lpg4x4, lpg2x2, reduc1x1, depth_est = predictions[2]
 
             if dataset:
-                mask = targets[2] > 0.11
+                mask = targets[2] > 0.1
             else:
                 mask = targets[2] > 1.0
 
@@ -119,6 +119,8 @@ class MultiHeadLoss(nn.Module):
 
             silog_criterion = silog_loss(variance_focus=0.85)
             depth_loss = silog_criterion.forward(depth_est, targets[2], mask.to(torch.bool))
+            if not torch.isfinite(depth_loss):
+                raise ValueError(f"Invalid depth_loss detected: {depth_loss.item()}")
 
             # lane_line_seg_predicts = predictions[2].view(-1)
             # # target[2] = shape( B 2 H W )

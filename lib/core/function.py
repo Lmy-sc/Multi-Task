@@ -1,13 +1,11 @@
 import time
-from distutils.command.config import config
-
-from lib.core.evaluate import ConfusionMatrix,SegmentationMetric
+from lib.core.evaluate import ConfusionMatrix, SegmentationMetric
 from lib.core.general import non_max_suppression, check_img_size, scale_coords, xyxy2xywh, xywh2xyxy, box_iou, \
     coco80_to_coco91_class, plot_images, ap_per_class, output_to_target, save_segmentation_visualizations, \
     save_depth_visualizations, save_raw_visualizations, flatten_grads, pcgrad, write_grads_to_model, \
     UncertaintyWeighting
 from lib.utils.utils import time_synchronized
-from lib.utils import plot_img_and_mask,plot_one_box,show_seg_result
+from lib.utils import plot_img_and_mask, plot_one_box, show_seg_result
 import torch
 from threading import Thread
 import numpy as np
@@ -26,15 +24,29 @@ import pdb
 
 from unitmodule.models.data_preprocessors import unit_module
 
-def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, num_batch, num_warmup,
-          writer_dict, logger, device, rank = -1):
+grad_snapshots = {}
+
+
+def save_grad_snapshot(model, task_id):
+    # 保存当前模型的梯度副本（注意此时是缩放后的）
+    grad = []
+    for p in model.parameters():
+        if p.grad is not None:
+            grad.append(p.grad.detach().clone())
+        else:
+            grad.append(None)
+    grad_snapshots[task_id] = grad
+
+
+def train(cfg, train_loader, model, model1, criterion, optimizer, scaler, epoch, num_batch, num_warmup,
+          writer_dict, logger, device, rank=-1):
     """
     train for one epoch
 
     Inputs:
-    - config: configurations 
+    - config: configurations
     - train_loader: loder for data
-    - model: 
+    - model:
     - criterion: (function) calculate all the loss, return total_loss, head_losses
     - writer_dict:
     outputs(2,)
@@ -57,23 +69,26 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
     model.train()
     start = time.time()
 
-    depth_loss=[]
-    det_loss =[]
-    seg_loss =[]
+    depth_loss = []
+    det_loss = []
+    seg_loss = []
     task_grads = {}
-    total_loss_num ={}
+    task_loss1 = {}
 
     accumulate_steps = 0
-    num_tasks =3
-    uncertainty_weighting = UncertaintyWeighting(num_tasks)
+    num_tasks = 3
+    uncertainty_weighting_pcgrad = UncertaintyWeighting(num_tasks)
+    uncertainty_weighting_nopcgrad = UncertaintyWeighting(num_tasks)
+    uncertainty_weighting_det = UncertaintyWeighting(2)
+    uncertainty_weighting_seg = UncertaintyWeighting(2)
+    uncertainty_weighting_depth = UncertaintyWeighting(2)
+    for i, (input, target, paths, shapes, task) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Train"):
+        # for i, (input, target, paths, shapes,task) in enumerate(train_loader):
 
-    for i, (input, target, paths, shapes,task) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Train"):
-    # for i, (input, target, paths, shapes,task) in enumerate(train_loader):
-
-        #print("trainloader",paths)
-        #print(input, target, paths, shapes,task)
+        # print("trainloader",paths)
+        # print(input, target, paths, shapes,task)
         intermediate = time.time()
-        #print('tims:{}'.format(intermediate-start))
+        # print('tims:{}'.format(intermediate-start))
         num_iter = i + num_batch * (epoch - 1)
 
         if num_iter < num_warmup:
@@ -84,7 +99,8 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
             # model.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
             for j, x in enumerate(optimizer.param_groups):
                 # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                x['lr'] = np.interp(num_iter, xi, [cfg.TRAIN.WARMUP_BIASE_LR if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
+                x['lr'] = np.interp(num_iter, xi,
+                                    [cfg.TRAIN.WARMUP_BIASE_LR if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
                 if 'momentum' in x:
                     x['momentum'] = np.interp(num_iter, xi, [cfg.TRAIN.WARMUP_MOMENTUM, cfg.TRAIN.MOMENTUM])
 
@@ -100,9 +116,9 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
             input = input.to(device, non_blocking=True)
             assign_target = []
 
-            #print(target)
+            # print(target)
             for tgt in target:
-                #print(type(tgt), tgt.shape if tgt is not None else "None")
+                # print(type(tgt), tgt.shape if tgt is not None else "None")
                 if isinstance(tgt, torch.Tensor):
                     assign_target.append(tgt.to(device))
                 else:
@@ -110,80 +126,142 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
 
             target = assign_target
 
-
-
         with amp.autocast(enabled=device.type != 'cpu'):
-            input1,losses_unit_module = model1(input)
-            outputs = model(input1,task)
-            total_loss, head_losses = criterion(outputs, target, shapes,model,input)
-            total_loss = total_loss + sum(losses_unit_module.values())
-            task_loss = total_loss
+            input1, losses_unit_module = model1(input)
+            weights = [5, 0.01, 0.01, 0, 0.1]  # 自定义的加权系数
 
+            total_loss_enhance = 0
+            for i, (name, loss_val) in enumerate(losses_unit_module.items()):
+                weight = weights[i]
+                if i == 3:
+                    continue  # 把这个模块中所有子损失加起来
+                total_loss_enhance += weight * loss_val
+            print(f"total_loss_enhance=={total_loss_enhance}")
+            task1 = task[0] if isinstance(task, list) else task
+            outputs = model(input1, task)
+            total_loss, head_losses = criterion(outputs, target, shapes, model, input)
+            # total_loss = total_loss + sum(losses_unit_module.values())
+
+            task_loss = [total_loss_enhance, total_loss]
+            if task1 == "detect":
+                task_loss = uncertainty_weighting_det(task_loss)
+            elif task1 == "seg":
+                task_loss = uncertainty_weighting_seg(task_loss)
+            elif task1 == "depth":
+                task_loss = uncertainty_weighting_depth(task_loss)
+            print(f"task_loss=={task_loss}")
 
             # outputs = model(input, task)
             # total_loss, head_losses = criterion(outputs, target, shapes, model, input)
             # total_loss = total_loss
             # task_loss = total_loss
 
-        #freeze_branch(model, task)
-        #if i%3== 0 :
+        # freeze_branch(model, task)
+        # if i%3== 0 :
         # compute gradient and do update step
         # optimizer.zero_grad()
-        #ith torch.autograd.detect_anomaly():
-        total_loss_num[accumulate_steps]=total_loss
+        # ith torch.autograd.detect_anomaly():
+
         optimizer.zero_grad()
-        scaler.scale(task_loss).backward()
-        task_grads[accumulate_steps] = flatten_grads(model)
-
-
         accumulate_steps += 1
-
-        if accumulate_steps == num_tasks and cfg.TEST.P:
-
-            # ----- PCGrad 投影 -----
-
-            if torch.rand(1).item() > 0.3:  # 70%的概率执行PCGrad
-                # ----- PCGrad 投影 -----
-                pcgrad_grads = pcgrad(task_grads)  # task_grads: dict {task_id: flattened_grad}
-            else:
-                # 30%的几率不执行 PCGrad
-                pcgrad_grads = list(task_grads.values()) # task_grads: dict {task_id: flattened_grad}
-
-            resize_loss = uncertainty_weighting(pcgrad_grads)
-
-            # 将梯度写入 model（注意 unflatten）
-            write_grads_to_model(model, resize_loss)
-            # write_grads_to_model(model, pcgrad_grads)
-
-            # 优化器 step
+        if (accumulate_steps==1 and task1 != "detect") or (accumulate_steps==2 and task1 != "seg") or(accumulate_steps==3 and task1 != "depth"):
+            freeze_branch(model, task)
+            scaler.scale(task_loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-            # 重置梯度累积计数器
-            task_grads.clear()
-            accumulate_steps = 0
-
-        # if math.isnan(head_losses[2]) :
-        #     print("Loss is NaN, skipping backward and optimizer step.")
-        #      # 清除梯度，防止污染
-        #     continue  # 跳过当前 iteration
-        # else:
-        #
-        #     scaler.scale(total_loss).backward()
-        #
-        #     # scaler.scale(total_loss).backward()
-        #     scaler.step(optimizer)
-        #
-        #     scaler.update()
 
 
-        # scaler.scale(total_loss).backward()
-        # scaler.step(optimizer)
-        # scaler.update()
+        else:
+            scaler.scale(task_loss).backward()
+            task_grads[accumulate_steps-1] = flatten_grads(model)
+            optimizer.zero_grad()
+
+            # # if accumulate_steps == num_tasks :
+            scale = scaler.get_scale()
+            inv = 1.0 / scale
+            task_grads[accumulate_steps-1] = task_grads[accumulate_steps-1] * inv
+
+            if accumulate_steps == num_tasks:
+                # scaler.unscale_(optimizer)
+                # ----- PCGrad 投影 -----
+                if torch.rand(1).item() > 0.7:  # 70%的概率执行PCGrad
+                    # ----- PCGrad 投影 -----
+                    pcgrad_grads = pcgrad(task_grads)  # task_grads: dict {task_id: flattened_grad}
+                    print("=== PCGrad 后梯度大小 ===")
+                    for i, grad in enumerate(pcgrad_grads):
+                        print(
+                            f"[{'det' if i == 0 else 'seg' if i == 1 else 'depth'}] grad norm after  PCGrad: {grad.norm().item():.6f}")
+                    resize_loss = uncertainty_weighting_pcgrad(pcgrad_grads)
+                    print("=== Uncertainty Weighted 后梯度大小 ===")
+                    print(f"[UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                    resize_loss = resize_loss * scale
+                    print(f"after scale [UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                    # 将梯度写入 model（注意 unflatten）
+                    write_grads_to_model(model, resize_loss)
+                    # write_grads_to_model(model, pcgrad_grads)
+
+                    # 优化器 step
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                    # 重置梯度累积计数器
+                    task_grads.clear()
+                    task_loss1.clear()
+
+                    optimizer.zero_grad()
+                    accumulate_steps = 0
+
+                else:
+                    # 30%的几率不执行 PCGrad
+                    pcgrad_grads = list(task_grads.values())  # task_grads: dict {task_id: flattened_grad}
+                    print("未执行 PCGrad，直接使用原始梯度。")
+                    resize_loss = uncertainty_weighting_nopcgrad(pcgrad_grads)
+                    print("=== Uncertainty Weighted 后梯度大小 ===")
+                    print(f"[UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                    resize_loss = resize_loss * scale
+                    print(f"after scale [UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                    # 将梯度写入 model（注意 unflatten）
+                    write_grads_to_model(model, resize_loss)
+                    # write_grads_to_model(model, pcgrad_grads)
+
+                    # 优化器 step
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                    # 重置梯度累积计数器
+                    task_grads.clear()
+                    task_loss1.clear()
+
+                    optimizer.zero_grad()
+                    accumulate_steps = 0
+
+                # resize_loss = uncertainty_weighting_nopcgrad(pcgrad_grads)
+                # print("=== Uncertainty Weighted 后梯度大小 ===")
+                # print(f"[UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                # resize_loss = resize_loss * scale
+                # print(f"after scale [UW] grad norm after weighting: {resize_loss.norm().item():.6f}")
+                # # 将梯度写入 model（注意 unflatten）
+                # write_grads_to_model(model, resize_loss)
+                # # write_grads_to_model(model, pcgrad_grads)
+                #
+                # # 优化器 step
+                # scaler.step(optimizer)
+                # scaler.update()
+                #
+                # # 重置梯度累积计数器
+                # task_grads.clear()
+                # task_loss1.clear()
+                #
+                # optimizer.zero_grad()
+                # accumulate_steps = 0
+
+            # scaler.scale(total_loss).backward()
+            # 不做0.7？or 再新增一个
 
         if rank in [-1, 0]:
             # measure accuracy and record loss
-            losses.update(total_loss.item(), input.size(0))
+            losses.update(task_loss.item(), input.size(0))
 
             # _, avg_acc, cnt, pred = accuracy(output.detach().cpu().numpy(),
             #                                  target.detach().cpu().numpy())
@@ -198,10 +276,10 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
                       'Speed {speed:.1f} samples/s\t' \
                       'Data {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
                       'Loss {loss.val:.5f} ({loss.avg:.5f})'.format(
-                          epoch, i, len(train_loader), batch_time=batch_time,
-                          speed=input.size(0)/batch_time.val,
-                          data_time=data_time, loss=losses)
-                
+                    epoch, i, len(train_loader), batch_time=batch_time,
+                    speed=input.size(0) / batch_time.val,
+                    data_time=data_time, loss=losses)
+
                 logger.info(msg)
 
                 writer = writer_dict['writer']
@@ -209,18 +287,19 @@ def train(cfg, train_loader, model, model1,criterion, optimizer, scaler, epoch, 
                 writer.add_scalar('train_loss', losses.val, global_steps)
                 # writer.add_scalar('train_acc', acc.val, global_steps)
                 writer_dict['train_global_steps'] = global_steps + 1
+                #print freq==1200?
 
 
 def freeze_branch(model, task):
-
+    task = task[0] if isinstance(task, list) else task
     for i, m in enumerate(model.model):
         if task == 'detect' and i not in [0, 1, 2]:
             for param in m.parameters():
                 param.requires_grad = False
-        elif task == 'seg' and i not in [0,1]+list(range(3, 17)):
+        elif task == 'seg' and i not in [0, 1] + list(range(3, 17)):
             for param in m.parameters():
                 param.requires_grad = False
-        elif task == 'depth' and i not in [0,1]+list(range(17, 19)):
+        elif task == 'depth' and i not in [0, 1] + list(range(17, 19)):
             for param in m.parameters():
                 param.requires_grad = False
         else:
@@ -228,18 +307,17 @@ def freeze_branch(model, task):
                 param.requires_grad = True
 
 
-
-def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, output_dir,
+def validate(epoch, config, val_loader, val_dataset, model, model1, criterion, output_dir,
              tb_log_dir, writer_dict=None, logger=None, device='cpu', rank=-1):
     """
     validata
 
     Inputs:
-    - config: configurations 
+    - config: configurations
     - train_loader: loder for data
-    - model: 
-    - criterion: (function) calculate all the loss, return 
-    - writer_dict: 
+    - model:
+    - criterion: (function) calculate all the loss, return
+    - writer_dict:
 
     Return:
     None
@@ -253,19 +331,19 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
         os.mkdir(save_dir)
 
     # print(save_dir)
-    _, imgsz = [check_img_size(x, s=max_stride) for x in config.MODEL.IMAGE_SIZE] #imgsz is multiple of max_stride
+    _, imgsz = [check_img_size(x, s=max_stride) for x in config.MODEL.IMAGE_SIZE]  # imgsz is multiple of max_stride
     batch_size = config.TRAIN.BATCH_SIZE_PER_GPU * len(config.GPUS)
     test_batch_size = config.TEST.BATCH_SIZE_PER_GPU * len(config.GPUS)
     training = False
-    is_coco = False #is coco dataset
-    save_conf=False # save auto-label confidences
-    verbose=False
-    save_hybrid=False
-    log_imgs,wandb = min(16,100), None
+    is_coco = False  # is coco dataset
+    save_conf = False  # save auto-label confidences
+    verbose = False
+    save_hybrid = False
+    log_imgs, wandb = min(16, 100), None
 
-    device = torch.device('cuda:0' )
+    device = torch.device('cuda:0')
     nc = 4
-    iouv = torch.linspace(0.5,0.95,10).to(device)     #iou vector for mAP@0.5:0.95
+    iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
 
     try:
@@ -274,20 +352,20 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
         wandb = None
         log_imgs = 0
 
-    seen =  0 
-    confusion_matrix = ConfusionMatrix(nc=model.nc) #detector confusion matrix
+    seen = 0
+    confusion_matrix = ConfusionMatrix(nc=model.nc)  # detector confusion matrix
 
-    da_metric = SegmentationMetric(config.num_seg_class) #segment confusion matrix
+    da_metric = SegmentationMetric(config.num_seg_class)  # segment confusion matrix
 
-    ll_metric = SegmentationMetric(2) #segment confusion matrix
+    ll_metric = SegmentationMetric(2)  # segment confusion matrix
 
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
     coco91class = coco80_to_coco91_class()
-    
+
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t_inf, t_nms = 0., 0., 0., 0., 0., 0., 0., 0., 0.
-    
+
     losses = AverageMeter()
 
     da_acc_seg = AverageMeter()
@@ -306,11 +384,10 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
     model.eval()
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
 
-
-    for batch_i, (img, target, paths, shapes,task) in tqdm(enumerate(val_loader), total=len(val_loader),desc="Valid"):
+    for batch_i, (img, target, paths, shapes, task) in tqdm(enumerate(val_loader), total=len(val_loader), desc="Valid"):
         device = torch.device('cuda:0')  # 指定使用第一个 GPU
         if not config.DEBUG:
-            img = img.to(device,non_blocking=True)
+            img = img.to(device, non_blocking=True)
             # 使用列表推导将每个张量移动到指定的设备
             for idx, tensor in enumerate(target):
                 if tensor is not None:
@@ -330,7 +407,7 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
             # for tgt in target:
             #     assign_target.append(tgt.to(device))
             # target = assign_target
-            nb, _, height, width = img.shape    #batch size, channel, height, width
+            nb, _, height, width = img.shape  # batch size, channel, height, width
 
         with torch.no_grad():
             pad_w, pad_h = shapes[0][1][1]
@@ -342,36 +419,34 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
 
             img = img.to(device)
 
-            input1,loss= model1 (img)
+            input1, loss = model1(img)
+            if config.TEST.PLOTS:
+                f = save_dir + '/' + f'pic_test_batch{batch_i}_labels.jpg'
+                save_raw_visualizations(img, input1,f)
             #
-            f = save_dir + '/' + f'pic_test_batch{batch_i}_labels.jpg'
-            save_raw_visualizations(img, input1,f)
-            #
-            det_out, da_seg_out, ll_seg_out = model(input1,task)
-            #det_out, da_seg_out, ll_seg_out = model(img, task)
+            det_out, da_seg_out, ll_seg_out = model(input1, task)
+            # det_out, da_seg_out, ll_seg_out = model(img, task)
 
             t_inf = time_synchronized() - t
 
             if batch_i > 0:
-                T_inf.update(t_inf/img.size(0),img.size(0))
-
+                T_inf.update(t_inf / img.size(0), img.size(0))
 
             train_out = None
-            inf_out =None
+            inf_out = None
 
             task = task[0] if isinstance(task, list) else task
-            if task== "detect":
+            if task == "detect":
                 inf_out, train_out = det_out
 
-
-            if task== "seg":
-            #driving area segment evaluation
-                #print(da_seg_out.size(),target[1].size())
-                _,da_predict=torch.max(da_seg_out, 1)
+            if task == "seg":
+                # driving area segment evaluation
+                # print(da_seg_out.size(),target[1].size())
+                _, da_predict = torch.max(da_seg_out, 1)
                 da_gt = target[1]
-                #_,da_gt=torch.max(target[1], 1)
-                da_predict = da_predict[:, pad_h:height-pad_h, pad_w:width-pad_w]
-                da_gt = da_gt[:, pad_h:height-pad_h, pad_w:width-pad_w]
+                # _,da_gt=torch.max(target[1], 1)
+                da_predict = da_predict[:, pad_h:height - pad_h, pad_w:width - pad_w]
+                da_gt = da_gt[:, pad_h:height - pad_h, pad_w:width - pad_w]
 
                 da_metric.reset()
                 da_metric.addBatch(da_predict.cpu(), da_gt.cpu())
@@ -380,24 +455,23 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
                 da_IoU = da_metric.IntersectionOverUnion()
                 da_mIoU = da_metric.meanIntersectionOverUnion()
 
+                da_acc_seg.update(da_acc, img.size(0))
+                da_IoU_seg.update(da_IoU, img.size(0))
+                da_mIoU_seg.update(da_mIoU, img.size(0))
 
+                if config.TEST.PLOTS:
+                    f = save_dir + '/' + f'seg_test_batch{batch_i}_labels.jpg'
+                    save_segmentation_visualizations(img, da_seg_out, target[1], f)
 
-                da_acc_seg.update(da_acc,img.size(0))
-                da_IoU_seg.update(da_IoU,img.size(0))
-                da_mIoU_seg.update(da_mIoU,img.size(0))
-                print(da_acc, da_IoU, da_mIoU)
-                f = save_dir + '/' + f'seg_test_batch{batch_i}_labels.jpg'
-                save_segmentation_visualizations(img, da_seg_out, target[1], f)
-
-            if task=="depth":
-            #lane line segment evaluation
+            if task == "depth":
+                # lane line segment evaluation
                 depth_8x8_scaled, depth_4x4_scaled, depth_2x2_scaled, reduc1x1, depth_est = ll_seg_out
-                print(depth_est.size(),target[2].size())
-                _,ll_predict=torch.max(depth_est, 1)
-                _,ll_gt=torch.max(target[2], 1)
-                #ll_gt = target[2]
-                ll_predict = ll_predict[:, pad_h:height-pad_h, pad_w:width-pad_w]
-                ll_gt = ll_gt[:, pad_h:height-pad_h, pad_w:width-pad_w]
+                print(depth_est.size(), target[2].size())
+                _, ll_predict = torch.max(depth_est, 1)
+                _, ll_gt = torch.max(target[2], 1)
+                # ll_gt = target[2]
+                ll_predict = ll_predict[:, pad_h:height - pad_h, pad_w:width - pad_w]
+                ll_gt = ll_gt[:, pad_h:height - pad_h, pad_w:width - pad_w]
 
                 ll_metric.reset()
                 ll_metric.addBatch(ll_predict.cpu(), ll_gt.cpu())
@@ -405,37 +479,39 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
                 ll_IoU = ll_metric.IntersectionOverUnion()
                 ll_mIoU = ll_metric.meanIntersectionOverUnion()
 
-                ll_acc_seg.update(ll_acc,img.size(0))
-                ll_IoU_seg.update(ll_IoU,img.size(0))
-                ll_mIoU_seg.update(ll_mIoU,img.size(0))
-                f = save_dir + '/' + f'depth_test_batch{batch_i}_labels.jpg'
-                save_depth_visualizations(img, depth_est, target[2], f)
-
+                ll_acc_seg.update(ll_acc, img.size(0))
+                ll_IoU_seg.update(ll_IoU, img.size(0))
+                ll_mIoU_seg.update(ll_mIoU, img.size(0))
+                if config.TEST.PLOTS:
+                    f = save_dir + '/' + f'depth_test_batch{batch_i}_labels.jpg'
+                    save_depth_visualizations(img, depth_est, target[2], f)
 
             total_loss, head_losses = criterion((train_out,da_seg_out,ll_seg_out), target, shapes,model, img )   #Compute loss
             losses.update(total_loss.item(), img.size(0))
+            # losses.update(0.1, img.size(0))
 
-            if task=="detect":
-            #NMS         
+            if task == "detect":
+                # NMS
                 t = time_synchronized()
                 # target[0][:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
                 lb = []  # for autolabelling
-                output = non_max_suppression(inf_out, conf_thres= config.TEST.NMS_CONF_THRESHOLD, iou_thres=config.TEST.NMS_IOU_THRESHOLD, labels=lb)
-                #output = non_max_suppression(inf_out, conf_thres=0.001, iou_thres=0.6)
-                #output = non_max_suppression(inf_out, conf_thres=config.TEST.NMS_CONF_THRES, iou_thres=config.TEST.NMS_IOU_THRES)
+                output = non_max_suppression(inf_out, conf_thres=config.TEST.NMS_CONF_THRESHOLD,
+                                             iou_thres=config.TEST.NMS_IOU_THRESHOLD, labels=lb)
+                # output = non_max_suppression(inf_out, conf_thres=0.001, iou_thres=0.6)
+                # output = non_max_suppression(inf_out, conf_thres=config.TEST.NMS_CONF_THRES, iou_thres=config.TEST.NMS_IOU_THRES)
                 t_nms = time_synchronized() - t
                 if batch_i > 0:
-                    T_nms.update(t_nms/img.size(0),img.size(0))
+                    T_nms.update(t_nms / img.size(0), img.size(0))
 
         # Statistics per image
         # output([xyxy,conf,cls])
         # target[0] ([img_id,cls,xyxy])
-        if task=='detect':
+        if task == 'detect':
             nlabel = (target[0].sum(dim=2) > 0).sum(dim=1)  # number of objects # [batch, num_gt ]
             for si, pred in enumerate(output):
                 # gt per image
                 nl = int(nlabel[si])
-                labels = target[0][si, :nl, 0:5] # [ num_gt_per_image, [cx, cy, w, h] ]
+                labels = target[0][si, :nl, 0:5]  # [ num_gt_per_image, [cx, cy, w, h] ]
                 # gt_classes = target[0][si, :nl, 0]
 
                 # labels = target[0][target[0][:, 0] == si, 1:]     #all object in one image
@@ -484,7 +560,6 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
                                       'bbox': [round(x, 3) for x in b],
                                       'score': round(p[4], 5)})
 
-
                 # Assign all predictions as incorrect
                 correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
                 if nl:
@@ -523,58 +598,58 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
                 # Append statistics (correct, conf, pcls, tcls)
                 stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
-            if config.TEST.PLOTS and batch_i<10:
-                f = save_dir +'/'+ f'det_test_batch{batch_i}_labels.jpg'  # labels
+            if config.TEST.PLOTS and batch_i < 55:
+                f = save_dir + '/' + f'det_test_batch{batch_i}_labels.jpg'  # labels
                 plot_images(img, target[0], paths, f, names)
-                #Thread(target=plot_images, args=(img, target[0], paths, f, names), daemon=True).start()
-                f = save_dir +'/'+ f'det_test_batch{batch_i}_pred.jpg'  # predictions
+                # Thread(target=plot_images, args=(img, target[0], paths, f, names), daemon=True).start()
+                f = save_dir + '/' + f'det_test_batch{batch_i}_pred.jpg'  # predictions
                 plot_images(img, output_to_target(output), paths, f, names)
-                #Thread(target=plot_images, args=(img, output_to_target(output), paths, f, names), daemon=True).start()
-                    # 可视化原图、GT和预测框
-                    # mean = [0.485, 0.456, 0.406]
-                    # std = [0.229, 0.224, 0.225]
-                    #
-                    # img_vis = reverse_transform(img[si], mean, std)
-                    # img_vis = cv2.cvtColor(img_vis, cv2.COLOR_RGB2BGR)
-                    # h,w = shapes[si][0]
-                    # img_vis = cv2.resize(img_vis, (w,h))
-                    #
-                    # # 画GT框（绿色）
-                    # for l in labels:
-                    #     cls_id = int(l[0])
-                    #     box = l[1:5].clone().view(1, 4)
-                    #     box = xywh2xyxy(box)
-                    #     scale_coords(img[si].shape[1:], box, shapes[si][0], shapes[si][1])  # 还原坐标
-                    #     x1, y1, x2, y2 = box[0].int().tolist()
-                    #     cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    #     cv2.putText(img_vis, f'GT:{cls_id}', (x1, y1 - 5), 0, 0.6, (0, 255, 0), 2)
-                    #
-                    # # 画预测框（红色）
-                    # for p in predn:
-                    #     x1, y1, x2, y2 = p[0:4].int().tolist()
-                    #     conf = p[4].item()
-                    #     cls_id = int(p[5].item())
-                    #     cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    #     cv2.putText(img_vis, f'Pred:{cls_id} {conf:.2f}', (x1, y2 + 15), 0, 0.5, (0, 0, 255), 2)
-                    #
-                    # save_dir = Path(save_dir)
-                    #
-                    # # 保存对比图
-                    # save_path = save_dir / 'vis' / f'{path.stem}.jpg'
-                    # save_path.parent.mkdir(parents=True, exist_ok=True)
-                    # cv2.imwrite(str(save_path), img_vis)
+                # Thread(target=plot_images, args=(img, output_to_target(output), paths, f, names), daemon=True).start()
+                # 可视化原图、GT和预测框
+                # mean = [0.485, 0.456, 0.406]
+                # std = [0.229, 0.224, 0.225]
+                #
+                # img_vis = reverse_transform(img[si], mean, std)
+                # img_vis = cv2.cvtColor(img_vis, cv2.COLOR_RGB2BGR)
+                # h,w = shapes[si][0]
+                # img_vis = cv2.resize(img_vis, (w,h))
+                #
+                # # 画GT框（绿色）
+                # for l in labels:
+                #     cls_id = int(l[0])
+                #     box = l[1:5].clone().view(1, 4)
+                #     box = xywh2xyxy(box)
+                #     scale_coords(img[si].shape[1:], box, shapes[si][0], shapes[si][1])  # 还原坐标
+                #     x1, y1, x2, y2 = box[0].int().tolist()
+                #     cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                #     cv2.putText(img_vis, f'GT:{cls_id}', (x1, y1 - 5), 0, 0.6, (0, 255, 0), 2)
+                #
+                # # 画预测框（红色）
+                # for p in predn:
+                #     x1, y1, x2, y2 = p[0:4].int().tolist()
+                #     conf = p[4].item()
+                #     cls_id = int(p[5].item())
+                #     cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                #     cv2.putText(img_vis, f'Pred:{cls_id} {conf:.2f}', (x1, y2 + 15), 0, 0.5, (0, 0, 255), 2)
+                #
+                # save_dir = Path(save_dir)
+                #
+                # # 保存对比图
+                # save_path = save_dir / 'vis' / f'{path.stem}.jpg'
+                # save_path.parent.mkdir(parents=True, exist_ok=True)
+                # cv2.imwrite(str(save_path), img_vis)
 
     # Compute statistics
     # stats : [[all_img_correct]...[all_img_tcls]]
-    if task=='detect':
+    if task == 'detect':
         stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy  zip(*) :unzip
 
         map70 = None
         map75 = None
         if len(stats) and stats[0].any():
             p, r, ap, f1, ap_class = ap_per_class(*stats, plot=True, save_dir=save_dir, names=names)
-            ap50, ap70, ap75,ap = ap[:, 0], ap[:,4], ap[:,5],ap.mean(1)  # [P, R, AP@0.5, AP@0.5:0.95]
-            mp, mr, map50, map70, map75, map = p.mean(), r.mean(), ap50.mean(), ap70.mean(),ap75.mean(),ap.mean()
+            ap50, ap70, ap75, ap = ap[:, 0], ap[:, 4], ap[:, 5], ap.mean(1)  # [P, R, AP@0.5, AP@0.5:0.95]
+            mp, mr, map50, map70, map75, map = p.mean(), r.mean(), ap50.mean(), ap70.mean(), ap75.mean(), ap.mean()
             nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
         else:
             nt = torch.zeros(1)
@@ -582,8 +657,8 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
         # Print results
         pf = '%20s' + '%12.3g' * 6  # print format
         print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
-        #print(map70)
-        #print(map75)
+        # print(map70)
+        # print(map75)
 
         # Print results per class
         if (verbose or (nc <= 20 and not training)) and nc > 1 and len(stats):
@@ -600,11 +675,13 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
             confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
             if wandb and wandb.run:
                 wandb.log({"Images": wandb_images})
-                wandb.log({"Validation": [wandb.Image(str(f), caption=f.name) for f in sorted(save_dir.glob('test*.jpg'))]})
+                wandb.log(
+                    {"Validation": [wandb.Image(str(f), caption=f.name) for f in sorted(save_dir.glob('test*.jpg'))]})
 
         # Save JSON
         if config.TEST.SAVE_JSON and len(jdict):
-            w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
+            w = Path(
+                weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
             anno_json = '../coco/annotations/instances_val2017.json'  # annotations json
             pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
             print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
@@ -619,7 +696,8 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
                 pred = anno.loadRes(pred_json)  # init predictions api
                 eval = COCOeval(anno, pred, 'bbox')
                 if is_coco:
-                    eval.params.imgIds = [int(Path(x).stem) for x in val_loader.dataset.img_files]  # image IDs to evaluate
+                    eval.params.imgIds = [int(Path(x).stem) for x in
+                                          val_loader.dataset.img_files]  # image IDs to evaluate
                 eval.evaluate()
                 eval.accumulate()
                 eval.summarize()
@@ -639,25 +717,22 @@ def validate(epoch,config, val_loader, val_dataset, model, model1,criterion, out
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
 
+    da_segment_result = (da_acc_seg.avg, da_IoU_seg.avg, da_mIoU_seg.avg)
 
-    da_segment_result = (da_acc_seg.avg,da_IoU_seg.avg,da_mIoU_seg.avg)
-
-    ll_segment_result = (ll_acc_seg.avg,ll_IoU_seg.avg,ll_mIoU_seg.avg)
-
-
+    ll_segment_result = (ll_acc_seg.avg, ll_IoU_seg.avg, ll_mIoU_seg.avg)
 
     # print(da_segment_result)
     # print(ll_segment_result)
     detect_result = np.asarray([mp, mr, map50, map])
     # print('mp:{},mr:{},map50:{},map:{}'.format(mp, mr, map50, map))
-    #print segmet_result
+    # print segmet_result
     t = [T_inf.avg, T_nms.avg]
     return da_segment_result, ll_segment_result, detect_result, losses.avg, maps, t
-        
 
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -679,6 +754,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 def tensor_to_image(tensor):
     """
     把 [C, H, W] 的 tensor 转成 [H, W, 3] 的 numpy 图像
@@ -688,7 +764,7 @@ def tensor_to_image(tensor):
     if tensor.dim() == 3:
         if tensor.size(0) == 1:  # 单通道
             img = tensor.squeeze(0).numpy()
-            img = np.stack([img]*3, axis=-1)  # 变伪RGB
+            img = np.stack([img] * 3, axis=-1)  # 变伪RGB
         elif tensor.size(0) == 3:
             img = tensor.permute(1, 2, 0).numpy()
         else:
@@ -698,10 +774,12 @@ def tensor_to_image(tensor):
     else:
         raise ValueError("tensor 应该是 [C, H, W] 维度")
 
+
 import os
 import numpy as np
 import torch
 import cv2
+
 
 def denormalize_image(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
     if isinstance(tensor, torch.Tensor):
@@ -711,6 +789,7 @@ def denormalize_image(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.2
         tensor = np.clip(tensor * 255.0, 0, 255).astype(np.uint8)
         tensor = tensor.transpose(1, 2, 0)  # -> H x W x C
     return tensor
+
 
 def tensor_to_image(tensor, denormalize=False):
     if isinstance(tensor, torch.Tensor):
@@ -724,6 +803,7 @@ def tensor_to_image(tensor, denormalize=False):
         tensor = np.repeat(tensor, 3, axis=2)
     tensor = np.clip(tensor * 255.0, 0, 255).astype(np.uint8)
     return tensor
+
 
 def save_image_pairs_with_denorm(imgs, preds, paths, save_dir, prefix="sample", denormalize=True):
     os.makedirs(save_dir, exist_ok=True)
@@ -773,5 +853,3 @@ def reverse_transform(img_tensor, mean, std):
     img = img.permute(1, 2, 0).numpy()  # CHW -> HWC
     img_vis = (img * 255).astype(np.uint8)  # 转为 uint8 格式
     return img_vis
-
-
