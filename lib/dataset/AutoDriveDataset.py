@@ -1,4 +1,5 @@
 import os
+from cProfile import label
 from operator import index
 
 import cv2
@@ -123,10 +124,10 @@ class AutoDriveDataset(Dataset):
         # self.target_type = cfg.MODEL.TARGET_TYPE
         self.shapes = np.array(cfg.DATASET.ORG_IMG_SIZE)
 
-        # self.mosaic_rate = cfg.mosaic_rate
-        # self.mixup_rate = cfg.mixup_rate
-        self.mosaic_rate = 1
-        self.mixup_rate = 1
+        self.mosaic_rate = cfg.mosaic_rate
+        self.mixup_rate = cfg.mixup_rate
+        # self.mosaic_rate = 1
+        # self.mixup_rate = 1
     
     def _get_db(self):
         """
@@ -144,7 +145,7 @@ class AutoDriveDataset(Dataset):
         """
         number of objects in the dataset
         """
-        return len(self.db)
+        return len(self.db[0])
 
     #4张图像拼接增强
     def load_mosaic(self, idx):
@@ -179,7 +180,7 @@ class AutoDriveDataset(Dataset):
             if i == 0:  # top left
                 img4 = np.full((h_mosaic * 2, w_mosaic * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
 
-                seg4 = np.full((h_mosaic * 2, w_mosaic * 2), 0, dtype=np.uint8)  # base image with 4 tiles
+                seg4 = np.full((h_mosaic * 2, w_mosaic * 2 ), 0, dtype=np.uint8)  # base image with 4 tiles
 
                 lane4 = np.full((h_mosaic * 2, w_mosaic * 2), 0, dtype=np.uint8)  # base image with 4 tiles
                 # 大图中左上角、右下角的坐标
@@ -216,16 +217,17 @@ class AutoDriveDataset(Dataset):
                     labels4.append(labels)
 
         # Concat/clip labels
-        labels4 = np.concatenate(labels4, 0)
-        
-        new = labels4.copy()
-        new[:, 1:] = np.clip(new[:, 1:], 0, 2*w_mosaic)
-        new[:, 2:5:2] = np.clip(new[:, 2:5:2], 0, 2*h_mosaic)
+        if labels4:
+            labels4 = np.concatenate(labels4, 0)
 
-        # filter candidates
-        i = box_candidates(box1=labels4[:,1:5].T, box2=new[:,1:5].T)
-        labels4 = labels4[i]
-        labels4[:] = new[i] 
+            new = labels4.copy()
+            new[:, 1:] = np.clip(new[:, 1:], 0, 2*w_mosaic)
+            new[:, 2:5:2] = np.clip(new[:, 2:5:2], 0, 2*h_mosaic)
+
+            # filter candidates
+            i = box_candidates(box1=labels4[:,1:5].T, box2=new[:,1:5].T)
+            labels4 = labels4[i]
+            labels4[:] = new[i]
 
         return img4, labels4, seg4, lane4, (h0, w0), (h, w), path
 
@@ -337,6 +339,27 @@ class AutoDriveDataset(Dataset):
             labels[:, 3] = (det_label[:, 1] + det_label[:, 3] / 2) * w
             labels[:, 4] = (det_label[:, 2] + det_label[:, 4] / 2) * h
 
+        if seg_label is not None:
+            seg_label = torch.tensor(seg_label)
+            # seg_label=self.Tensor(seg_label)
+            r = (seg_label[:, :, 0] > 127).long()
+            g = (seg_label[:, :, 1] > 127).long()
+            b = (seg_label[:, :, 2] > 127).long()
+            seg_label = (r << 2) + (g << 1) + b
+            seg_label = seg_label.cpu()
+
+            # 步骤 B: 使用 .numpy() 方法将其转换为 NumPy 数组
+            seg_label = seg_label.numpy()
+
+            # 步骤 C: （可选但通常推荐）转换数据类型
+            # 你的位运算 (r << 2) + (g << 1) + b 会产生 0 到 7 之间的整数。
+            # .long() 使 r, g, b 成为 torch.int64 类型，所以 final_seg_label_tensor 也是 torch.int64。
+            # 转换后的 seg_label_numpy 将是 np.int64 类型。
+            # 对于图像掩码或标签图，通常使用 np.uint8 类型更合适，因为值范围小。
+            if seg_label.dtype != np.uint8:
+                seg_label = seg_label.astype(np.uint8)
+
+
         # 返回图像和标签
         return img, labels, seg_label, lane_label, (h0, w0), (h, w), data['image']
 
@@ -378,13 +401,16 @@ class AutoDriveDataset(Dataset):
                 #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
                 img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
 
+
                 # mixup is double mosaic, really slow
-                if random.random() < self.mixup_rate:
+                if random.random() < self.mixup_rate and task == 'detect':
                     # img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
                     img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.choice(indices))
                     img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2,task)
+
             else:
                 img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
+
 
 
             try:
@@ -408,13 +434,10 @@ class AutoDriveDataset(Dataset):
 
                     lane_label = new['depth']
                     img = new['image']
-
-
-
-
-
             except ValueError:  # bbox have width or height == 0
                 pass
+
+
 
             combination = (img, seg_label, lane_label)
             # combination = [img]  # 必须用 list 方便过滤
@@ -423,7 +446,7 @@ class AutoDriveDataset(Dataset):
             # if lane_label is not None:
             #     combination.append(lane_label)
 
-            combination, labels = random_perspective(
+            (img, seg_label, lane_label), labels = random_perspective(
                 combination=combination,
                 targets=labels,
                 degrees=self.cfg.DATASET.ROT_FACTOR,
@@ -432,6 +455,8 @@ class AutoDriveDataset(Dataset):
                 shear=self.cfg.DATASET.SHEAR,
                 border=self.mosaic_border if mosaic_this else (0, 0)
             )
+
+
 
             # (img, seg_label, lane_label), labels = random_perspective(
             #     combination=combination,
@@ -446,6 +471,8 @@ class AutoDriveDataset(Dataset):
             # img = combination[0]
             # seg_label = combination[1] if len(combination) > 1 else None
             # lane_label = combination[2] if len(combination) > 2 else None
+            #img1 = self.transform(np.ascontiguousarray(img))
+
 
             augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
 
@@ -453,7 +480,7 @@ class AutoDriveDataset(Dataset):
             if random.random() < 0.5:
                 img = np.fliplr(img)
 
-                if len(labels):
+                if data['tape']=='detect':
                     rows, cols, channels = img.shape
                     x1 = labels[:, 1].copy()
                     x2 = labels[:, 3].copy()
@@ -470,7 +497,7 @@ class AutoDriveDataset(Dataset):
             if random.random() < 0.5:
                 img = np.flipud(img)
 
-                if len(labels):
+                if data['tape']=='detect':
                     rows, cols, channels = img.shape
                     y1 = labels[:, 2].copy()
                     y2 = labels[:, 4].copy()
@@ -486,10 +513,12 @@ class AutoDriveDataset(Dataset):
             img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
 
 
+
+
         (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)
         shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
-        labels_out = torch.zeros((len(labels), 5))
+        labels_out = None
         if data['tape']== 'detect':
             if len(labels):
                 # update labels after letterbox
@@ -520,15 +549,15 @@ class AutoDriveDataset(Dataset):
         #     save_dir='D:\Multi-task\Git\Multi-Task\inference\image_output'
         #     cv2.imwrite(os.path.join(save_dir, f'{Path(path).stem}_gt.jpg'), img)
 
-        if data['tape'] == 'seg':
-
-
-            seg_label = torch.tensor(seg_label)
-            # seg_label=self.Tensor(seg_label)
-            r = (seg_label[:, :, 0] > 127).long()
-            g = (seg_label[:, :, 1] > 127).long()
-            b = (seg_label[:, :, 2] > 127).long()
-            seg_label= (r << 2) + (g << 1) + b
+        # if data['tape'] == 'seg':
+        #
+        #
+        #     seg_label = torch.tensor(seg_label)
+        #     # seg_label=self.Tensor(seg_label)
+        #     r = (seg_label[:, :, 0] > 127).long()
+        #     g = (seg_label[:, :, 1] > 127).long()
+        #     b = (seg_label[:, :, 2] > 127).long()
+        #     seg_label= (r << 2) + (g << 1) + b
 
             # if self.cfg.num_seg_class == 3:
             #     _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
@@ -558,27 +587,175 @@ class AutoDriveDataset(Dataset):
         #     lane2 = self.Tensor(lane2)
         #     lane_label = torch.stack((lane2[0], lane1[0]),0)
 
+
         if data['tape'] == 'depth':
             if isinstance(lane_label, np.ndarray):
                 lane_label = self.Tensor(lane_label)
-
-
-
             # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
             if lane_label.ndim == 2:
                 lane_label = lane_label.unsqueeze(0)
 
             # lane_label 就是单通道深度图
-
         target = [labels_out, seg_label, lane_label]
+        # def tensor_to_numpy_img(tensor_img):
+        #     if isinstance(tensor_img, torch.Tensor):
+        #         img = tensor_img.clone().detach().cpu().numpy()
+        #         if img.ndim == 3 and img.shape[0] == 3:
+        #             img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
+        #         elif img.ndim == 3 and img.shape[2] == 3:
+        #             pass  # 已是 H,W,C 格式
+        #         else:
+        #             raise ValueError("图像维度异常，无法转换为OpenCV格式")
+        #
+        #         # 反标准化（如果做过 ImageNet 标准化）
+        #         mean = np.array([0.485, 0.456, 0.406])
+        #         std = np.array([0.229, 0.224, 0.225])
+        #         img = img * std + mean
+        #         img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        #     elif isinstance(tensor_img, np.ndarray):
+        #         if tensor_img.dtype != np.uint8:
+        #             img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
+        #         else:
+        #             img = tensor_img
+        #     else:
+        #         raise TypeError("不支持的图像类型")
+        #     img = np.ascontiguousarray(img)
+        #     return img
+        #
+        # if data['tape'] == 'detect' and labels_out is not None and len(labels_out):
+        #     # 取消 img 的 transform，使用原始 numpy 图像进行绘制
+        #     img_vis = tensor_to_numpy_img(img)
+        #
+        #
+        #     for label in labels_out:
+        #         cls_id, cx, cy, w, h = label.tolist()
+        #         x1 = int(cx - w / 2)
+        #         y1 = int(cy - h / 2)
+        #         x2 = int(cx + w / 2)
+        #         y2 = int(cy + h / 2)
+        #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
+        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        #
+        #     # 保存或显示图片
+        #     save_dir = 'D:\Multi-task\Git\Multi-Task\inference\image'
+        #     os.makedirs(save_dir, exist_ok=True)
+        #     cv2.imwrite(os.path.join(save_dir, f'{Path(path).stem}_debug.jpg'), img_vis)
+        def tensor_to_numpy_img(tensor_img):
+            """
+            支持将图像（Tensor或ndarray）转为可视化格式的uint8 HWC图像。
+            如果是float，会反标准化和放缩；如果是uint8则直接返回。
+            """
+            if isinstance(tensor_img, torch.Tensor):
+                img = tensor_img.clone().detach().cpu().numpy()
+                if img.ndim == 3 and img.shape[0] == 3:
+                    img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
+                elif img.ndim == 3 and img.shape[2] == 3:
+                    pass  # 已是 HWC
+                else:
+                    raise ValueError("图像维度异常，无法转换为OpenCV格式")
+
+                # 反标准化（如果做过 ImageNet 标准化）
+                mean = np.array([0.485, 0.456, 0.406])
+                std = np.array([0.229, 0.224, 0.225])
+                img = img * std + mean
+                img = (img * 255.0).clip(0, 255).astype(np.uint8)
+
+            elif isinstance(tensor_img, np.ndarray):
+                if tensor_img.dtype != np.uint8:
+                    img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
+                else:
+                    img = tensor_img
+            else:
+                raise TypeError("不支持的图像类型")
+
+            return np.ascontiguousarray(img)
+
+
+
+        img_vis = tensor_to_numpy_img(img)
+        save_dir = 'D:/Multi-task/Git/Multi-Task/inference/image'
+        os.makedirs(save_dir, exist_ok=True)
+        base_name = Path(path).stem
+        # if labels_out is not None and len(labels_out):
+        #     for label in labels_out:
+        #         cls_id, cx, cy, w, h = label.tolist()
+        #         x1 = int(cx - w / 2)
+        #         y1 = int(cy - h / 2)
+        #         x2 = int(cx + w / 2)
+        #         y2 = int(cy + h / 2)
+        #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
+        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        #
+        # # 保存图像
+        #
+        #
+        # cv2.imwrite(os.path.join(save_dir, f'{base_name}_detect.jpg'), img_vis)
+
+        # 分割图可视化（8类 uint8）
+        # if seg_label is not None and task == 'seg':
+        #     if isinstance(seg_label, torch.Tensor):
+        #         seg_label = seg_label.squeeze().cpu().numpy().astype(np.uint8)
+        #
+        #     def decode_seg_label_to_rgb(seg_label):
+        #         """
+        #         将 0~7 的整数 label 转回 3位二进制 RGB 可视化图像。
+        #         输入：
+        #             seg_label: H x W 的 np.uint8 / int 类型
+        #         输出：
+        #             rgb_img: H x W x 3 的 np.uint8 图像
+        #         """
+        #         # 将 label 还原为3位二进制
+        #         seg_label = seg_label.astype(np.uint8)
+        #         r = ((seg_label >> 2) & 1) * 255
+        #         g = ((seg_label >> 1) & 1) * 255
+        #         b = (seg_label & 1) * 255
+        #
+        #         rgb_img = np.stack([r, g, b], axis=-1).astype(np.uint8)  # HWC 格式
+        #         return rgb_img
+        #
+        #     seg_vis = decode_seg_label_to_rgb(seg_label)
+        #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_seg.jpg'), seg_vis)
+
+        # 深度图可视化（灰度）
+        # if lane_label is not None and task == 'depth':
+        #     if isinstance(lane_label, torch.Tensor):
+        #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+        #
+        #     # 深度图是 [0, 1]，直接映射到 [0, 255]，转换为 uint8 灰度图
+        #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+        #
+        #     # 保存为灰度图
+        #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth.png'), depth_gray)
+        if lane_label is not None and task == 'depth':
+            if isinstance(lane_label, torch.Tensor):
+                depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+
+            # 深度图：0-1 → 0-255 灰度图
+            depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+
+            # 转换原图（tensor）为 numpy 格式（uint8, HWC）
+            orig_img = tensor_to_numpy_img(img)  # 你之前写好的函数
+
+            # 若原图为彩色 (H,W,3)，灰度图为 (H,W)，需要扩展通道
+            if len(depth_gray.shape) == 2:
+                depth_vis = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
+            else:
+                depth_vis = depth_gray  # 已经是 BGR 图
+
+            # 若大小不一致（可能经过resize），统一为一样高
+            if orig_img.shape[:2] != depth_vis.shape[:2]:
+                depth_vis = cv2.resize(depth_vis, (orig_img.shape[1], orig_img.shape[0]))
+
+            # 横向拼图
+            combined = np.hstack((orig_img, depth_vis))
+
+            # 保存
+            cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth_compare.png'), combined)
 
         img = self.transform(img)
-
         task =data['tape']
-
-
-
-
         #1
         return img, target, path, shapes,task
 
@@ -656,11 +833,14 @@ class AutoDriveDataset(Dataset):
             label_det = None
 
         if  task == 'seg' :
+            label_seg = [torch.from_numpy(arr).long() for arr in label_seg]
+
             label_seg = torch.stack(label_seg, 0)
         else:
             label_seg = None
 
         if  task == 'depth' :
+
             label_depth = torch.stack(label_depth, 0)
         else:
             label_depth = None
