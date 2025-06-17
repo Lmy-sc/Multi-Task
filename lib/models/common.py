@@ -4,10 +4,68 @@ import torch
 import torch.nn as nn
 from PIL import Image, ImageDraw
 import torch.nn.functional as F
+from mmcv.cnn.bricks import DropPath
 from torch.nn import Upsample
 from torch.nn import SiLU
 
+class ResidualBlockSequence_DET(nn.Module):
+    def __init__(self, in_channels_list):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            ResidualBlock(c, c) for c in in_channels_list  # 输入输出通道一致
+        ])
 
+    def forward(self, x):
+        x_front = x[:5]
+        x_tail = x[5:]
+        out_tail = [block(feat) for block, feat in zip(self.blocks, x_tail)]
+        return x_front + tuple(out_tail)  # 返回和原来一样数量的特征图
+
+class ResidualBlockSequence_DEPTH(nn.Module):
+    def __init__(self, in_channels_list):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            ResidualBlock(c, c) for c in in_channels_list  # 输入输出通道一致
+        ])
+
+    def forward(self, x):
+        out_tail = [block(feat) for block, feat in zip(self.blocks, x)]
+        return  out_tail  # 返回和原来一样数量的特征图
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, norm=True):
+        super(ResidualBlock, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels) if norm else nn.Identity()
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels) if norm else nn.Identity()
+
+        # 如果输入输出通道不同，或者stride不为1，使用下采样
+        self.downsample = None
+        if stride != 1 or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels) if norm else nn.Identity()
+            )
+
+    def forward(self, x):
+        identity = x
+
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        return self.relu(out)
 
 class MergeBlock(nn.Module):
     def __init__(self, policy):

@@ -163,23 +163,67 @@ def main():
             os.path.join(cfg.LOG_DIR, cfg.DATASET.DATASET), 'checkpoint.pth'
         )
         #加载完整模型（包括三任务分支）
+        def init_weights(m):
+            if isinstance(m, (torch.nn.Conv2d, torch.nn.Linear)):
+                torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    torch.nn.init.constant_(m.bias, 0)
+            elif isinstance(m, torch.nn.BatchNorm2d):
+                torch.nn.init.constant_(m.weight, 1)
+                torch.nn.init.constant_(m.bias, 0)
+
+        model1.apply(init_weights)
+
+        # ---------- 加载 model 的部分预训练权重 ----------
         if os.path.exists(cfg.MODEL.PRETRAINED):
-            logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED1))
             logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED))
-            checkpoint1 = torch.load(cfg.MODEL.PRETRAINED1)
             checkpoint = torch.load(cfg.MODEL.PRETRAINED)
 
-            #begin_epoch = checkpoint['epoch']
-            begin_epoch = 60
-            # best_perf = checkpoint['perf']
-            last_epoch = checkpoint['epoch']
-            model1.load_state_dict(checkpoint1['state_dict'])
-            model.load_state_dict(checkpoint['state_dict'])
+            begin_epoch = 1
+            last_epoch = checkpoint.get('epoch', 0)
 
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # 加载 model 的部分参数
+            state_dict = checkpoint['state_dict']
+            for k, v in state_dict.items():
+                print(f'{k}: {v.shape}')
+            missing_keys, unexpected_keys = model.load_state_dict(
+                checkpoint['state_dict'], strict=False
+            )
+            if missing_keys:
+                logger.warning(f"=> model: Missing keys not loaded: {missing_keys}")
+            if unexpected_keys:
+                logger.warning(f"=> model: Unexpected keys ignored: {unexpected_keys}")
+
+            if 'optimizer' in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint['optimizer'])
+                    logger.info("=> optimizer state loaded")
+                except Exception as e:
+                    logger.warning(f"=> failed to load optimizer state: {e}")
+
             logger.info("=> loaded checkpoint '{}' (epoch {})".format(
-                cfg.MODEL.PRETRAINED, checkpoint['epoch']))
-            #cfg.NEED_AUTOANCHOR = False     #disable autoanchor
+                cfg.MODEL.PRETRAINED, checkpoint.get('epoch', 'unknown')))
+        else:
+            logger.warning(f"=> pretrained model not found: {cfg.MODEL.PRETRAINED}")
+            begin_epoch = 0
+            last_epoch = 0
+        # if os.path.exists(cfg.MODEL.PRETRAINED):
+        #     logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED1))
+        #     logger.info("=> loading model '{}'".format(cfg.MODEL.PRETRAINED))
+        #     checkpoint1 = torch.load(cfg.MODEL.PRETRAINED1)
+        #     checkpoint = torch.load(cfg.MODEL.PRETRAINED)
+        #
+        #     #begin_epoch = checkpoint['epoch']
+        #     begin_epoch = 60
+        #     # best_perf = checkpoint['perf']
+        #     last_epoch = checkpoint['epoch']
+        #     model1.load_state_dict(checkpoint1['state_dict'])
+        #     model.load_state_dict(checkpoint['state_dict'])
+        #
+        #     optimizer.load_state_dict(checkpoint['optimizer'])
+        #     logger.info("=> loaded checkpoint '{}' (epoch {})".format(
+        #         cfg.MODEL.PRETRAINED, checkpoint['epoch']))
+        #     #cfg.NEED_AUTOANCHOR = False     #disable autoanchor
 
         #仅加载检测分支参数（state_dict 中挑选第 0~24 层）
         if os.path.exists(cfg.MODEL.PRETRAINED_DET):
@@ -320,8 +364,13 @@ def main():
     print('=> start training...')
     for epoch in range(begin_epoch+1, cfg.TRAIN.END_EPOCH+1):
         if rank != -1:
+            #打乱
             train_loader.sampler.set_epoch(epoch)
         # train for one epoch
+        # for i, (input, target, paths, shapes, task) in enumerate(train_loader):
+        #     # 假设你的数据集返回的是 (image, target)，这里打印targets的索引或者样本编号
+        #     # 具体看你的dataset输出什么，这里假设target里有index或你用image tensor的id代替
+        #     print(f"  Batch {i}: first sample id (or target) = {paths}")
         train(cfg, train_loader, model, model1,criterion, optimizer, scaler,
               epoch, num_batch, num_warmup, writer_dict, logger, device, rank)
 

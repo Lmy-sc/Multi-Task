@@ -13,7 +13,10 @@ from pathlib import Path
 from PIL import Image
 from fontTools.ttLib.tables.C_P_A_L_ import table_C_P_A_L_
 from numpy.ma.core import indices
+from requests.packages import target
 from torch.utils.data import Dataset
+from torch.utils.tensorboard.summary import image
+
 from ..utils import letterbox, augment_hsv, random_perspective, xyxy2xywh, cutout
 import albumentations as A
 from collections import OrderedDict
@@ -145,28 +148,29 @@ class AutoDriveDataset(Dataset):
         """
         number of objects in the dataset
         """
-        return len(self.db[0])
+        return len(self.db)
 
     #4张图像拼接增强
-    def load_mosaic(self, idx):
+    def load_mosaic(self, idx ,task):
     # YOLOv5 4-mosaic loader. Loads 1 image + 3 random images into a 4-image mosaic
         labels4 = []
         w_mosaic, h_mosaic = 640, 384
 
         yc = int(random.uniform(-self.mosaic_border[0], 2 * h_mosaic + self.mosaic_border[0])) # 192,3x192
         xc = int(random.uniform(-self.mosaic_border[1], 2 * w_mosaic + self.mosaic_border[1])) # 320,3x320
-        task = self.db[0][idx]["tape"]
-        indices =[]
-        if task== 'detect':
-            indices=self.db[1]
-        elif task == 'seg':
-            indices=self.db[2]
-        elif task == 'depth':
-            indices = self.db[3]
+        #task = self.db[0][idx]["tape"]
+        # indices =[]
+        # if task== 'detect':
+        #     indices=self.db[1]
+        # elif task == 'seg':
+        #     indices=self.db[2]
+        # elif task == 'depth':
+        #     indices = self.db[3]
 
+        indices = range(len(self.db))
         if len(indices) < 3:
             print(f"[Warning] Task '{task}' has too few samples ({len(indices)}) for mosaic augmentation")
-        #indices = range(len(self.db))
+
         # leng = range (len(indices))
         indices = [idx] + random.choices(indices, k=3)  # 3 additional iWmage indices
                         
@@ -174,7 +178,7 @@ class AutoDriveDataset(Dataset):
         for i, index in enumerate(indices):
             # Load image
             # img, labels, seg_label, (h0,w0), (h, w), path = self.load_image(index), h=384, w = 640
-            img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(index)
+            img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(index,task)
                         
             # place img in img4
             if i == 0:  # top left
@@ -200,14 +204,14 @@ class AutoDriveDataset(Dataset):
 
             img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
 
-            if self.db[0][idx]["tape"] == 'seg':
+            if task == 'seg':
                 seg4[y1a:y2a, x1a:x2a] = seg_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-            if self.db[0][idx]["tape"] == 'depth':
+            if task == 'depth':
                 lane4[y1a:y2a, x1a:x2a] = lane_label[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
 
             padw = x1a - x1b
             padh = y1a - y1b
-            if self.db[0][idx]["tape"] == 'detect':
+            if task == 'detect':
                 if len(labels):
                     labels[:, 1] += padw
                     labels[:, 2] += padh
@@ -261,8 +265,133 @@ class AutoDriveDataset(Dataset):
         #depth_label |= depth_label2
         return im, labels_depth, seg_label_final, depth_label_final
 
-    def load_image(self, idx):
-        data = self.db[0][idx]
+    def load_image(self, idx,task):
+        # data = self.db[idx]
+        # img1 = cv2.imread(data["image1"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+        # img2 = cv2.imread(data["image2"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+        # img3 = cv2.imread(data["image3"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+        #
+        # if img1 is None or img2 is None or img3 is None:
+        #     raise FileNotFoundError(f"❌ 图像读取失败：{data['image']}")
+        #
+        # img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
+        # img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
+        # img3 = cv2.cvtColor(img3, cv2.COLOR_BGR2RGB)
+        #
+        # # 根据配置文件判断任务类型
+        # # 加载目标检测标签 (如果存在)
+        # det_label = None
+        # if "label" in data and data["label"] is not None:
+        #     det_label = data["label"]
+        #     det_label = np.array(det_label)  # 确保标签是数组格式
+        #
+        # # 加载分割标签 (如果存在)
+        # seg_label = None
+        # if "mask" in data and data["mask"] is not None:
+        #     seg_label = cv2.imread(data["mask"])  # 读取彩色分割标签
+        #
+        # # 加载车道线标签 (如果存在)
+        # lane_label = None
+        # if "lane" in data and data["lane"] is not None:
+        #     lane_label = cv2.imread(data["lane"], 0)  # 读取车道线标签
+        #
+        # # 图像大小和目标大小调整
+        # resized_shape = self.inputsize
+        # if isinstance(resized_shape, list) or isinstance(resized_shape, tuple):
+        #     resized_shape = max(resized_shape)  # 取最大边，确保是 int
+        #
+        # h0, w0 = img.shape[:2]
+        # max_h, max_w = 480, 640
+        # # 再计算 resize 比例
+        # r = resized_shape / max(max_h, max_w)
+        #
+        # # 计算 resize 后的新尺寸
+        # new_h, new_w = int(max_h * r), int(max_w * r)
+        # interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
+        #
+        # # resize 三张图
+        # img = cv2.resize(img, (new_w, new_h), interpolation=interp)
+        # if seg_label is not None:
+        #     seg_label = cv2.resize(seg_label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        # if lane_label is not None:
+        #     lane_label = cv2.resize(lane_label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        # # if isinstance(resized_shape, list):
+        # #     resized_shape = max(resized_shape)
+        # # h0, w0 = img.shape[:2]  # 原始高宽
+        # # r = resized_shape / max(h0, w0)  # 计算缩放比例
+        # #
+        # # if r != False:  # 如果缩放比例不是1，进行调整
+        # #     interp = cv2.INTER_AREA if r < 1 else cv2.INTER_LINEAR
+        # #     img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        # #     print("11111111111111111")
+        # #     print(img.shape[:2])
+        # #     if seg_label is not None:
+        # #         seg_label = cv2.resize(seg_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        # #
+        # #     if lane_label is not None:
+        # #         lane_label = cv2.resize(lane_label, (int(w0 * r), int(h0 * r)), interpolation=interp)
+        # #
+        #
+        # h, w = img.shape[:2]  # 更新后的高度和宽度
+        #
+        # # 目标检测标签：将 YOLO 格式的 [cx, cy, w, h] 转为 [xmin, ymin, xmax, ymax]
+        # labels = []
+        # if det_label is not None and det_label.size > 0:
+        #     labels = det_label.copy()
+        #     labels[:, 1] = (det_label[:, 1] - det_label[:, 3] / 2) * w
+        #     labels[:, 2] = (det_label[:, 2] - det_label[:, 4] / 2) * h
+        #     labels[:, 3] = (det_label[:, 1] + det_label[:, 3] / 2) * w
+        #     labels[:, 4] = (det_label[:, 2] + det_label[:, 4] / 2) * h
+        #
+        # if seg_label is not None:
+        #     seg_label = torch.tensor(seg_label)
+        #     # seg_label=self.Tensor(seg_label)
+        #     r = (seg_label[:, :, 0] > 127).long()
+        #     g = (seg_label[:, :, 1] > 127).long()
+        #     b = (seg_label[:, :, 2] > 127).long()
+        #     seg_label = (r << 2) + (g << 1) + b
+        #     seg_label = seg_label.cpu()
+        #
+        #     # 步骤 B: 使用 .numpy() 方法将其转换为 NumPy 数组
+        #     seg_label = seg_label.numpy()
+        #
+        #     # 步骤 C: （可选但通常推荐）转换数据类型
+        #     # 你的位运算 (r << 2) + (g << 1) + b 会产生 0 到 7 之间的整数。
+        #     # .long() 使 r, g, b 成为 torch.int64 类型，所以 final_seg_label_tensor 也是 torch.int64。
+        #     # 转换后的 seg_label_numpy 将是 np.int64 类型。
+        #     # 对于图像掩码或标签图，通常使用 np.uint8 类型更合适，因为值范围小。
+        #     if seg_label.dtype != np.uint8:
+        #         seg_label = seg_label.astype(np.uint8)
+
+        data = self.db[idx]
+        if self.is_train:
+            if task == 'detect':
+                data = {
+                    'image': data['image1'],  # 保留 image2，改成统一的 key
+                    'label': data['label'],
+                    'mask': None,
+                    'lane': None,
+                    'tape': 'detect'
+                }
+            elif task == 'seg':
+                data = {
+                    'image': data['image2'],  # 保留 image2，改成统一的 key
+                    'label': None,
+                    'mask': data['mask'],
+                    'lane': None,
+                    'tape': 'seg'
+                }
+            elif task == 'depth':
+                data = {
+                    'image': data['image3'],  # 保留 image2，改成统一的 key
+                    'label': None,
+                    'mask': None,
+                    'lane': data['lane'],
+                    'tape': 'depth'
+                }
+
+
+
         img = cv2.imread(data["image"], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
 
         if img is None:
@@ -384,380 +513,476 @@ class AutoDriveDataset(Dataset):
         cv2.warpAffine
         """
 
-        data = self.db[0][idx]
-        task = data["tape"]
-        indices = []
-        if task == 'detect':
-            indices = self.db[1]
-        elif task == 'seg':
-            indices = self.db[2]
-        elif task == 'depth':
-            indices = self.db[3]
+        data1 = self.db[idx]
+
         if self.is_train:
-            mosaic_this = False
-            if random.random() < self.mosaic_rate:
-                mosaic_this = True
-                #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
-                #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
-                img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx)
+            image_all = []
+            target_all = []
+            path_all = []
+            shape_all = []
+            task_all = []
+            for i in range (3):
+                if i ==0:
+                    data = {
+                        'image': data1['image1'],  # 保留 image2，改成统一的 key
+                        'label': data1['label'],
+                        'mask': None,
+                        'lane': None,
+                        'tape': 'detect'
+                    }
+                elif i == 1:
+                    data = {
+                        'image': data1['image2'],  # 保留 image2，改成统一的 key
+                        'label': None,
+                        'mask': data1['mask'],
+                        'lane': None,
+                        'tape': 'seg'
+                    }
+                elif i == 2:
+                    data = {
+                        'image': data1['image3'],  # 保留 image2，改成统一的 key
+                        'label': None,
+                        'mask': None,
+                        'lane': data1['lane'],
+                        'tape': 'depth'
+                    }
+
+                task = data["tape"]
+            # indices = []
+            # if task == 'detect':
+            #     indices = self.db[1]
+            # elif task == 'seg':
+            #     indices = self.db[2]
+            # elif task == 'depth':
+            #     indices = self.db[3]
+                indices = range(len(self.db))
+                mosaic_this = False
+                if random.random() < self.mosaic_rate:
+                    mosaic_this = True
+                    #  this doubles training time with inherent stuttering in tqdm, prob cpu or io bottleneck, does prefetch_generator work with ddp? (no improvement)
+                    #  updated, mosaic is inherently slow, maybe cache the images in RAM? maybe it was IO bottleneck of reading 4 images everytime? time it
+                    img, labels, seg_label, lane_label, (h0, w0), (h, w), path = self.load_mosaic(idx,task)
 
 
-                # mixup is double mosaic, really slow
-                if random.random() < self.mixup_rate and task == 'detect':
-                    # img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
-                    img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.choice(indices))
-                    img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2,task)
+                    # mixup is double mosaic, really slow
+                    if random.random() < self.mixup_rate and task == 'detect':
+                        # img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.randint(0, len(self.db) - 1))
+                        img2, labels2, seg_label2, lane_label2, (_, _), (_, _), _ = self.load_mosaic(random.choice(indices),task)
+                        img, labels, seg_label, lane_label = self.mixup(img, labels, seg_label, lane_label, img2, labels2, seg_label2, lane_label2,task)
 
-            else:
-                img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
-
-
-
-            try:
-                # labels = None
-                # seg_label = None
-                # depth_label = None
-                if task == 'detect':
-                    new = self.albumentations_transform(image=img,
-                                                        bboxes=labels[:, 1:] if len(labels) else labels,
-                                                        class_labels=labels[:, 0] if len(labels) else labels)
-                    labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(
-                        labels) else labels
-                    img = new['image']
-                elif task == 'seg':
-                    new = self.albumentations_transform(image=img, mask=seg_label)
-
-                    seg_label = new['mask']
-                    img = new['image']
-                elif task == 'depth':
-                    new = self.albumentations_transform(image=img, depth=lane_label)
-
-                    lane_label = new['depth']
-                    img = new['image']
-            except ValueError:  # bbox have width or height == 0
-                pass
-
-
-
-            combination = (img, seg_label, lane_label)
-            # combination = [img]  # 必须用 list 方便过滤
-            # if seg_label is not None:
-            #     combination.append(seg_label)
-            # if lane_label is not None:
-            #     combination.append(lane_label)
-
-            (img, seg_label, lane_label), labels = random_perspective(
-                combination=combination,
-                targets=labels,
-                degrees=self.cfg.DATASET.ROT_FACTOR,
-                translate=self.cfg.DATASET.TRANSLATE,
-                scale=self.cfg.DATASET.SCALE_FACTOR,
-                shear=self.cfg.DATASET.SHEAR,
-                border=self.mosaic_border if mosaic_this else (0, 0)
-            )
+                else:
+                    img, labels, seg_label, lane_label, (h0, w0), (h,w), path  = self.load_image(idx)
 
 
 
-            # (img, seg_label, lane_label), labels = random_perspective(
-            #     combination=combination,
-            #     targets=labels,
-            #     degrees=self.cfg.DATASET.ROT_FACTOR,
-            #     translate=self.cfg.DATASET.TRANSLATE,
-            #     scale=self.cfg.DATASET.SCALE_FACTOR,
-            #     shear=self.cfg.DATASET.SHEAR,
-            #     border=self.mosaic_border if mosaic_this else (0, 0)
-            # )
+                try:
+                    # labels = None
+                    # seg_label = None
+                    # depth_label = None
+                    if task == 'detect':
+                        new = self.albumentations_transform(image=img,
+                                                            bboxes=labels[:, 1:] if len(labels) else labels,
+                                                            class_labels=labels[:, 0] if len(labels) else labels)
+                        labels = np.array([[c, *b] for c, b in zip(new['class_labels'], new['bboxes'])]) if len(
+                            labels) else labels
+                        img = new['image']
+                    elif task == 'seg':
+                        new = self.albumentations_transform(image=img, mask=seg_label)
 
-            # img = combination[0]
-            # seg_label = combination[1] if len(combination) > 1 else None
-            # lane_label = combination[2] if len(combination) > 2 else None
-            #img1 = self.transform(np.ascontiguousarray(img))
+                        seg_label = new['mask']
+                        img = new['image']
+                    elif task == 'depth':
+                        new = self.albumentations_transform(image=img, depth=lane_label)
+
+                        lane_label = new['depth']
+                        img = new['image']
+                except ValueError:  # bbox have width or height == 0
+                    pass
 
 
-            augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
 
-            #random left-right flip
-            if random.random() < 0.5:
-                img = np.fliplr(img)
+                combination = (img, seg_label, lane_label)
+                # combination = [img]  # 必须用 list 方便过滤
+                # if seg_label is not None:
+                #     combination.append(seg_label)
+                # if lane_label is not None:
+                #     combination.append(lane_label)
 
-                if data['tape']=='detect':
-                    rows, cols, channels = img.shape
-                    x1 = labels[:, 1].copy()
-                    x2 = labels[:, 3].copy()
-                    x_tmp = x1.copy()
-                    labels[:, 1] = cols - x2
-                    labels[:, 3] = cols - x_tmp
+                (img, seg_label, lane_label), labels = random_perspective(
+                    combination=combination,
+                    targets=labels,
+                    degrees=self.cfg.DATASET.ROT_FACTOR,
+                    translate=self.cfg.DATASET.TRANSLATE,
+                    scale=self.cfg.DATASET.SCALE_FACTOR,
+                    shear=self.cfg.DATASET.SHEAR,
+                    border=self.mosaic_border if mosaic_this else (0, 0)
+                )
 
-                if data['tape']=='seg':
-                    seg_label = np.fliplr(seg_label)
+
+
+                # (img, seg_label, lane_label), labels = random_perspective(
+                #     combination=combination,
+                #     targets=labels,
+                #     degrees=self.cfg.DATASET.ROT_FACTOR,
+                #     translate=self.cfg.DATASET.TRANSLATE,
+                #     scale=self.cfg.DATASET.SCALE_FACTOR,
+                #     shear=self.cfg.DATASET.SHEAR,
+                #     border=self.mosaic_border if mosaic_this else (0, 0)
+                # )
+
+                # img = combination[0]
+                # seg_label = combination[1] if len(combination) > 1 else None
+                # lane_label = combination[2] if len(combination) > 2 else None
+                #img1 = self.transform(np.ascontiguousarray(img))
+
+
+                augment_hsv(img, hgain=self.cfg.DATASET.HSV_H, sgain=self.cfg.DATASET.HSV_S, vgain=self.cfg.DATASET.HSV_V)
+
+                #random left-right flip
+                if random.random() < 0.5:
+                    img = np.fliplr(img)
+
+                    if data['tape']=='detect':
+                        rows, cols, channels = img.shape
+                        x1 = labels[:, 1].copy()
+                        x2 = labels[:, 3].copy()
+                        x_tmp = x1.copy()
+                        labels[:, 1] = cols - x2
+                        labels[:, 3] = cols - x_tmp
+
+                    if data['tape']=='seg':
+                        seg_label = np.fliplr(seg_label)
+                    if data['tape'] == 'depth':
+                        lane_label = np.fliplr(lane_label)
+
+                # random up-down flip
+                if random.random() < 0.5:
+                    img = np.flipud(img)
+
+                    if data['tape']=='detect':
+                        rows, cols, channels = img.shape
+                        y1 = labels[:, 2].copy()
+                        y2 = labels[:, 4].copy()
+                        y_tmp = y1.copy()
+                        labels[:, 2] = rows - y2
+                        labels[:, 4] = rows - y_tmp
+                    if data['tape'] == 'seg':
+                        seg_label = np.flipud(seg_label)
+                    if data['tape'] == 'depth':
+                        lane_label = np.flipud(lane_label)
+
+                (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True,
+                                                                     scaleup=self.is_train)
+                shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+
+                labels_out = None
+                if data['tape'] == 'detect':
+                    if len(labels):
+                        # update labels after letterbox
+                        labels[:, 1] = ratio[0] * labels[:, 1] + pad[0]
+                        labels[:, 2] = ratio[1] * labels[:, 2] + pad[1]
+                        labels[:, 3] = ratio[0] * labels[:, 3] + pad[0]
+                        labels[:, 4] = ratio[1] * labels[:, 4] + pad[1]
+
+                        # convert xyxy to ( cx, cy, w, h )
+                        labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
+
+                    labels_out = torch.zeros((len(labels), 5))
+                    if len(labels):
+                        labels_out[:, :] = torch.from_numpy(labels)
+
+                img = np.ascontiguousarray(img)
+
                 if data['tape'] == 'depth':
-                    lane_label = np.fliplr(lane_label)
+                    if isinstance(lane_label, np.ndarray):
+                        lane_label = self.Tensor(lane_label)
+                    # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
+                    if lane_label.ndim == 2:
+                        lane_label = lane_label.unsqueeze(0)
 
-            # random up-down flip
-            if random.random() < 0.5:
-                img = np.flipud(img)
+                    # lane_label 就是单通道深度图
+                target = [labels_out, seg_label, lane_label]
 
-                if data['tape']=='detect':
-                    rows, cols, channels = img.shape
-                    y1 = labels[:, 2].copy()
-                    y2 = labels[:, 4].copy()
-                    y_tmp = y1.copy()
-                    labels[:, 2] = rows - y2
-                    labels[:, 4] = rows - y_tmp
-                if data['tape'] == 'seg':
-                    seg_label = np.flipud(seg_label)
-                if data['tape'] == 'depth':
-                    lane_label = np.flipud(lane_label)
+                def tensor_to_numpy_img(tensor_img):
+                    """
+                    支持将图像（Tensor或ndarray）转为可视化格式的uint8 HWC图像。
+                    如果是float，会反标准化和放缩；如果是uint8则直接返回。
+                    """
+                    if isinstance(tensor_img, torch.Tensor):
+                        img = tensor_img.clone().detach().cpu().numpy()
+                        if img.ndim == 3 and img.shape[0] == 3:
+                            img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
+                        elif img.ndim == 3 and img.shape[2] == 3:
+                            pass  # 已是 HWC
+                        else:
+                            raise ValueError("图像维度异常，无法转换为OpenCV格式")
+
+                        # 反标准化（如果做过 ImageNet 标准化）
+                        mean = np.array([0.485, 0.456, 0.406])
+                        std = np.array([0.229, 0.224, 0.225])
+                        img = img * std + mean
+                        img = (img * 255.0).clip(0, 255).astype(np.uint8)
+
+                    elif isinstance(tensor_img, np.ndarray):
+                        if tensor_img.dtype != np.uint8:
+                            img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
+                        else:
+                            img = tensor_img
+                    else:
+                        raise TypeError("不支持的图像类型")
+
+                    return np.ascontiguousarray(img)
+
+                img_vis = tensor_to_numpy_img(img)
+                save_dir = 'D:/Multi-task/Git/Multi-Task/inference/image'
+                os.makedirs(save_dir, exist_ok=True)
+                base_name = Path(path).stem
+                # if labels_out is not None and len(labels_out):
+                #     for label in labels_out:
+                #         cls_id, cx, cy, w, h = label.tolist()
+                #         x1 = int(cx - w / 2)
+                #         y1 = int(cy - h / 2)
+                #         x2 = int(cx + w / 2)
+                #         y2 = int(cy + h / 2)
+                #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
+                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                #
+                # # 保存图像
+                #
+                #
+                # cv2.imwrite(os.path.join(save_dir, f'{base_name}_detect.jpg'), img_vis)
+
+                # 分割图可视化（8类 uint8）
+                # if seg_label is not None and task == 'seg':
+                #     if isinstance(seg_label, torch.Tensor):
+                #         seg_label = seg_label.squeeze().cpu().numpy().astype(np.uint8)
+                #
+                #     def decode_seg_label_to_rgb(seg_label):
+                #         """
+                #         将 0~7 的整数 label 转回 3位二进制 RGB 可视化图像。
+                #         输入：
+                #             seg_label: H x W 的 np.uint8 / int 类型
+                #         输出：
+                #             rgb_img: H x W x 3 的 np.uint8 图像
+                #         """
+                #         # 将 label 还原为3位二进制
+                #         seg_label = seg_label.astype(np.uint8)
+                #         r = ((seg_label >> 2) & 1) * 255
+                #         g = ((seg_label >> 1) & 1) * 255
+                #         b = (seg_label & 1) * 255
+                #
+                #         rgb_img = np.stack([r, g, b], axis=-1).astype(np.uint8)  # HWC 格式
+                #         return rgb_img
+                #
+                #     seg_vis = decode_seg_label_to_rgb(seg_label)
+                #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_seg.jpg'), seg_vis)
+
+                # 深度图可视化（灰度）
+                # if lane_label is not None and task == 'depth':
+                #     if isinstance(lane_label, torch.Tensor):
+                #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+                #
+                #     # 深度图是 [0, 1]，直接映射到 [0, 255]，转换为 uint8 灰度图
+                #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+                #
+                #     # 保存为灰度图
+                #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth.png'), depth_gray)
+                # if lane_label is not None and task == 'depth':
+                #     if isinstance(lane_label, torch.Tensor):
+                #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+                #
+                #     # 深度图：0-1 → 0-255 灰度图
+                #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+                #
+                #     # 转换原图（tensor）为 numpy 格式（uint8, HWC）
+                #     orig_img = tensor_to_numpy_img(img)  # 你之前写好的函数
+                #
+                #     # 若原图为彩色 (H,W,3)，灰度图为 (H,W)，需要扩展通道
+                #     if len(depth_gray.shape) == 2:
+                #         depth_vis = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
+                #     else:
+                #         depth_vis = depth_gray  # 已经是 BGR 图
+                #
+                #     # 若大小不一致（可能经过resize），统一为一样高
+                #     if orig_img.shape[:2] != depth_vis.shape[:2]:
+                #         depth_vis = cv2.resize(depth_vis, (orig_img.shape[1], orig_img.shape[0]))
+                #
+                #     # 横向拼图
+                #     combined = np.hstack((orig_img, depth_vis))
+                #
+                #     # 保存
+                #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth_compare.png'), combined)
+
+                img = self.transform(img)
+                task = data['tape']
+
+                image_all.append(img)
+                path_all.append(path)
+                if i == 0:
+                    target_all.append(target[i])
+                elif i == 1:
+                    target_all.append(target[i])
+                else:
+                    target_all.append(target[i])
+                shape_all.append(shapes)
+                task_all.append(task)
+                # 1
+
+            return image_all, target_all, path_all, shape_all, task_all
 
         else:
-            img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx)
+            data = data1
+            task = data['tape']
+            img, labels, seg_label, lane_label, (h0, w0), (h,w), path = self.load_image(idx,task)
 
+            (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)
+            shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
+            labels_out = None
+            if data['tape']== 'detect':
+                if len(labels):
+                    # update labels after letterbox
+                    labels[:, 1] = ratio[0] * labels[:, 1] + pad[0]
+                    labels[:, 2] = ratio[1] * labels[:, 2] + pad[1]
+                    labels[:, 3] = ratio[0] * labels[:, 3] + pad[0]
+                    labels[:, 4] = ratio[1] * labels[:, 4] + pad[1]
 
+                    # convert xyxy to ( cx, cy, w, h )
+                    labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
 
-        (img, seg_label, lane_label), ratio, pad = letterbox((img, seg_label, lane_label), 640, auto=True, scaleup=self.is_train)
-        shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+                labels_out = torch.zeros((len(labels), 5))
+                if len(labels):
+                    labels_out[:, :] = torch.from_numpy(labels)
 
-        labels_out = None
-        if data['tape']== 'detect':
-            if len(labels):
-                # update labels after letterbox
-                labels[:, 1] = ratio[0] * labels[:, 1] + pad[0]
-                labels[:, 2] = ratio[1] * labels[:, 2] + pad[1]
-                labels[:, 3] = ratio[0] * labels[:, 3] + pad[0]
-                labels[:, 4] = ratio[1] * labels[:, 4] + pad[1]
+            img = np.ascontiguousarray(img)
 
-                # convert xyxy to ( cx, cy, w, h )
-                labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
+            if data['tape'] == 'depth':
+                if isinstance(lane_label, np.ndarray):
+                    lane_label = self.Tensor(lane_label)
+                # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
+                if lane_label.ndim == 2:
+                    lane_label = lane_label.unsqueeze(0)
 
-            labels_out = torch.zeros((len(labels), 5))
-            if len(labels):
-                labels_out[:, :] = torch.from_numpy(labels)
+                # lane_label 就是单通道深度图
+            target = [labels_out, seg_label, lane_label]
 
-        img = np.ascontiguousarray(img)
+            def tensor_to_numpy_img(tensor_img):
+                """
+                支持将图像（Tensor或ndarray）转为可视化格式的uint8 HWC图像。
+                如果是float，会反标准化和放缩；如果是uint8则直接返回。
+                """
+                if isinstance(tensor_img, torch.Tensor):
+                    img = tensor_img.clone().detach().cpu().numpy()
+                    if img.ndim == 3 and img.shape[0] == 3:
+                        img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
+                    elif img.ndim == 3 and img.shape[2] == 3:
+                        pass  # 已是 HWC
+                    else:
+                        raise ValueError("图像维度异常，无法转换为OpenCV格式")
 
-        # if data['tape'] == 'detect' and len(labels_out):
-        #     for label in labels_out:
-        #         cls_id, cx, cy, w, h = label.tolist()
-        #         x1 = int(cx - w / 2)
-        #         y1 = int(cy - h / 2)
-        #         x2 = int(cx + w / 2)
-        #         y2 = int(cy + h / 2)
-        #         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        #         cv2.putText(img, f'{int(cls_id)}', (x1, y1 - 5),
-        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        #     save_dir='D:\Multi-task\Git\Multi-Task\inference\image_output'
-        #     cv2.imwrite(os.path.join(save_dir, f'{Path(path).stem}_gt.jpg'), img)
+                    # 反标准化（如果做过 ImageNet 标准化）
+                    mean = np.array([0.485, 0.456, 0.406])
+                    std = np.array([0.229, 0.224, 0.225])
+                    img = img * std + mean
+                    img = (img * 255.0).clip(0, 255).astype(np.uint8)
 
-        # if data['tape'] == 'seg':
-        #
-        #
-        #     seg_label = torch.tensor(seg_label)
-        #     # seg_label=self.Tensor(seg_label)
-        #     r = (seg_label[:, :, 0] > 127).long()
-        #     g = (seg_label[:, :, 1] > 127).long()
-        #     b = (seg_label[:, :, 2] > 127).long()
-        #     seg_label= (r << 2) + (g << 1) + b
-
-            # if self.cfg.num_seg_class == 3:
-            #     _,seg0 = cv2.threshold(seg_label[:,:,0],128,255,cv2.THRESH_BINARY)
-            #     _,seg1 = cv2.threshold(seg_label[:,:,1],1,255,cv2.THRESH_BINARY)
-            #     _,seg2 = cv2.threshold(seg_label[:,:,2],1,255,cv2.THRESH_BINARY)
-            # else:
-            #     _,seg1 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY)
-            #     _,seg2 = cv2.threshold(seg_label,1,255,cv2.THRESH_BINARY_INV)
-            #
-            #
-            # if self.cfg.num_seg_class == 3:
-            #     seg0 = self.Tensor(seg0)
-            #
-            # seg1 = self.Tensor(seg1)
-            # seg2 = self.Tensor(seg2)
-            #
-            # if self.cfg.num_seg_class == 3:
-            #     seg_label = torch.stack((seg0[0], seg1[0], seg2[0]), 0)
-            # else:
-            #     seg_label = torch.stack((seg2[0], seg1[0]), 0)
-
-        # if data['tape'] == 'depth':
-        #
-        #     _,lane1 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY)
-        #     _,lane2 = cv2.threshold(lane_label,1,255,cv2.THRESH_BINARY_INV)
-        #     lane1 = self.Tensor(lane1)
-        #     lane2 = self.Tensor(lane2)
-        #     lane_label = torch.stack((lane2[0], lane1[0]),0)
-
-
-        if data['tape'] == 'depth':
-            if isinstance(lane_label, np.ndarray):
-                lane_label = self.Tensor(lane_label)
-            # 如果深度图是 [1, H, W]，可以保持，或者 squeeze 掉 1 个通道变成 [H, W]
-            if lane_label.ndim == 2:
-                lane_label = lane_label.unsqueeze(0)
-
-            # lane_label 就是单通道深度图
-        target = [labels_out, seg_label, lane_label]
-        # def tensor_to_numpy_img(tensor_img):
-        #     if isinstance(tensor_img, torch.Tensor):
-        #         img = tensor_img.clone().detach().cpu().numpy()
-        #         if img.ndim == 3 and img.shape[0] == 3:
-        #             img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
-        #         elif img.ndim == 3 and img.shape[2] == 3:
-        #             pass  # 已是 H,W,C 格式
-        #         else:
-        #             raise ValueError("图像维度异常，无法转换为OpenCV格式")
-        #
-        #         # 反标准化（如果做过 ImageNet 标准化）
-        #         mean = np.array([0.485, 0.456, 0.406])
-        #         std = np.array([0.229, 0.224, 0.225])
-        #         img = img * std + mean
-        #         img = (img * 255.0).clip(0, 255).astype(np.uint8)
-        #     elif isinstance(tensor_img, np.ndarray):
-        #         if tensor_img.dtype != np.uint8:
-        #             img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
-        #         else:
-        #             img = tensor_img
-        #     else:
-        #         raise TypeError("不支持的图像类型")
-        #     img = np.ascontiguousarray(img)
-        #     return img
-        #
-        # if data['tape'] == 'detect' and labels_out is not None and len(labels_out):
-        #     # 取消 img 的 transform，使用原始 numpy 图像进行绘制
-        #     img_vis = tensor_to_numpy_img(img)
-        #
-        #
-        #     for label in labels_out:
-        #         cls_id, cx, cy, w, h = label.tolist()
-        #         x1 = int(cx - w / 2)
-        #         y1 = int(cy - h / 2)
-        #         x2 = int(cx + w / 2)
-        #         y2 = int(cy + h / 2)
-        #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
-        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        #
-        #     # 保存或显示图片
-        #     save_dir = 'D:\Multi-task\Git\Multi-Task\inference\image'
-        #     os.makedirs(save_dir, exist_ok=True)
-        #     cv2.imwrite(os.path.join(save_dir, f'{Path(path).stem}_debug.jpg'), img_vis)
-        def tensor_to_numpy_img(tensor_img):
-            """
-            支持将图像（Tensor或ndarray）转为可视化格式的uint8 HWC图像。
-            如果是float，会反标准化和放缩；如果是uint8则直接返回。
-            """
-            if isinstance(tensor_img, torch.Tensor):
-                img = tensor_img.clone().detach().cpu().numpy()
-                if img.ndim == 3 and img.shape[0] == 3:
-                    img = img.transpose(1, 2, 0)  # C,H,W → H,W,C
-                elif img.ndim == 3 and img.shape[2] == 3:
-                    pass  # 已是 HWC
+                elif isinstance(tensor_img, np.ndarray):
+                    if tensor_img.dtype != np.uint8:
+                        img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
+                    else:
+                        img = tensor_img
                 else:
-                    raise ValueError("图像维度异常，无法转换为OpenCV格式")
+                    raise TypeError("不支持的图像类型")
 
-                # 反标准化（如果做过 ImageNet 标准化）
-                mean = np.array([0.485, 0.456, 0.406])
-                std = np.array([0.229, 0.224, 0.225])
-                img = img * std + mean
-                img = (img * 255.0).clip(0, 255).astype(np.uint8)
-
-            elif isinstance(tensor_img, np.ndarray):
-                if tensor_img.dtype != np.uint8:
-                    img = (tensor_img * 255.0).clip(0, 255).astype(np.uint8)
-                else:
-                    img = tensor_img
-            else:
-                raise TypeError("不支持的图像类型")
-
-            return np.ascontiguousarray(img)
+                return np.ascontiguousarray(img)
 
 
 
-        img_vis = tensor_to_numpy_img(img)
-        save_dir = 'D:/Multi-task/Git/Multi-Task/inference/image'
-        os.makedirs(save_dir, exist_ok=True)
-        base_name = Path(path).stem
-        # if labels_out is not None and len(labels_out):
-        #     for label in labels_out:
-        #         cls_id, cx, cy, w, h = label.tolist()
-        #         x1 = int(cx - w / 2)
-        #         y1 = int(cy - h / 2)
-        #         x2 = int(cx + w / 2)
-        #         y2 = int(cy + h / 2)
-        #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
-        #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        #
-        # # 保存图像
-        #
-        #
-        # cv2.imwrite(os.path.join(save_dir, f'{base_name}_detect.jpg'), img_vis)
+            img_vis = tensor_to_numpy_img(img)
+            save_dir = 'D:/Multi-task/Git/Multi-Task/inference/image'
+            os.makedirs(save_dir, exist_ok=True)
+            base_name = Path(path).stem
+            # if labels_out is not None and len(labels_out):
+            #     for label in labels_out:
+            #         cls_id, cx, cy, w, h = label.tolist()
+            #         x1 = int(cx - w / 2)
+            #         y1 = int(cy - h / 2)
+            #         x2 = int(cx + w / 2)
+            #         y2 = int(cy + h / 2)
+            #         cv2.rectangle(img_vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            #         cv2.putText(img_vis, f'{int(cls_id)}', (x1, y1 - 5),
+            #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            #
+            # # 保存图像
+            #
+            #
+            # cv2.imwrite(os.path.join(save_dir, f'{base_name}_detect.jpg'), img_vis)
 
-        # 分割图可视化（8类 uint8）
-        # if seg_label is not None and task == 'seg':
-        #     if isinstance(seg_label, torch.Tensor):
-        #         seg_label = seg_label.squeeze().cpu().numpy().astype(np.uint8)
-        #
-        #     def decode_seg_label_to_rgb(seg_label):
-        #         """
-        #         将 0~7 的整数 label 转回 3位二进制 RGB 可视化图像。
-        #         输入：
-        #             seg_label: H x W 的 np.uint8 / int 类型
-        #         输出：
-        #             rgb_img: H x W x 3 的 np.uint8 图像
-        #         """
-        #         # 将 label 还原为3位二进制
-        #         seg_label = seg_label.astype(np.uint8)
-        #         r = ((seg_label >> 2) & 1) * 255
-        #         g = ((seg_label >> 1) & 1) * 255
-        #         b = (seg_label & 1) * 255
-        #
-        #         rgb_img = np.stack([r, g, b], axis=-1).astype(np.uint8)  # HWC 格式
-        #         return rgb_img
-        #
-        #     seg_vis = decode_seg_label_to_rgb(seg_label)
-        #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_seg.jpg'), seg_vis)
+            # 分割图可视化（8类 uint8）
+            # if seg_label is not None and task == 'seg':
+            #     if isinstance(seg_label, torch.Tensor):
+            #         seg_label = seg_label.squeeze().cpu().numpy().astype(np.uint8)
+            #
+            #     def decode_seg_label_to_rgb(seg_label):
+            #         """
+            #         将 0~7 的整数 label 转回 3位二进制 RGB 可视化图像。
+            #         输入：
+            #             seg_label: H x W 的 np.uint8 / int 类型
+            #         输出：
+            #             rgb_img: H x W x 3 的 np.uint8 图像
+            #         """
+            #         # 将 label 还原为3位二进制
+            #         seg_label = seg_label.astype(np.uint8)
+            #         r = ((seg_label >> 2) & 1) * 255
+            #         g = ((seg_label >> 1) & 1) * 255
+            #         b = (seg_label & 1) * 255
+            #
+            #         rgb_img = np.stack([r, g, b], axis=-1).astype(np.uint8)  # HWC 格式
+            #         return rgb_img
+            #
+            #     seg_vis = decode_seg_label_to_rgb(seg_label)
+            #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_seg.jpg'), seg_vis)
 
-        # 深度图可视化（灰度）
-        # if lane_label is not None and task == 'depth':
-        #     if isinstance(lane_label, torch.Tensor):
-        #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
-        #
-        #     # 深度图是 [0, 1]，直接映射到 [0, 255]，转换为 uint8 灰度图
-        #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
-        #
-        #     # 保存为灰度图
-        #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth.png'), depth_gray)
-        if lane_label is not None and task == 'depth':
-            if isinstance(lane_label, torch.Tensor):
-                depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+            # 深度图可视化（灰度）
+            # if lane_label is not None and task == 'depth':
+            #     if isinstance(lane_label, torch.Tensor):
+            #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+            #
+            #     # 深度图是 [0, 1]，直接映射到 [0, 255]，转换为 uint8 灰度图
+            #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+            #
+            #     # 保存为灰度图
+            #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth.png'), depth_gray)
+            # if lane_label is not None and task == 'depth':
+            #     if isinstance(lane_label, torch.Tensor):
+            #         depth_map = lane_label.squeeze().cpu().numpy()  # H x W, float32
+            #
+            #     # 深度图：0-1 → 0-255 灰度图
+            #     depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
+            #
+            #     # 转换原图（tensor）为 numpy 格式（uint8, HWC）
+            #     orig_img = tensor_to_numpy_img(img)  # 你之前写好的函数
+            #
+            #     # 若原图为彩色 (H,W,3)，灰度图为 (H,W)，需要扩展通道
+            #     if len(depth_gray.shape) == 2:
+            #         depth_vis = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
+            #     else:
+            #         depth_vis = depth_gray  # 已经是 BGR 图
+            #
+            #     # 若大小不一致（可能经过resize），统一为一样高
+            #     if orig_img.shape[:2] != depth_vis.shape[:2]:
+            #         depth_vis = cv2.resize(depth_vis, (orig_img.shape[1], orig_img.shape[0]))
+            #
+            #     # 横向拼图
+            #     combined = np.hstack((orig_img, depth_vis))
+            #
+            #     # 保存
+            #     cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth_compare.png'), combined)
 
-            # 深度图：0-1 → 0-255 灰度图
-            depth_gray = (np.clip(depth_map, 0, 1) * 255).astype(np.uint8)
-
-            # 转换原图（tensor）为 numpy 格式（uint8, HWC）
-            orig_img = tensor_to_numpy_img(img)  # 你之前写好的函数
-
-            # 若原图为彩色 (H,W,3)，灰度图为 (H,W)，需要扩展通道
-            if len(depth_gray.shape) == 2:
-                depth_vis = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
-            else:
-                depth_vis = depth_gray  # 已经是 BGR 图
-
-            # 若大小不一致（可能经过resize），统一为一样高
-            if orig_img.shape[:2] != depth_vis.shape[:2]:
-                depth_vis = cv2.resize(depth_vis, (orig_img.shape[1], orig_img.shape[0]))
-
-            # 横向拼图
-            combined = np.hstack((orig_img, depth_vis))
-
-            # 保存
-            cv2.imwrite(os.path.join(save_dir, f'{base_name}_depth_compare.png'), combined)
-
-        img = self.transform(img)
-        task =data['tape']
-        #1
-        return img, target, path, shapes,task
+            img = self.transform(img)
+            task =data['tape']
+            return img, target, path, shapes,task
 
     def select_data(self, db):
         """
@@ -792,7 +1017,6 @@ class AutoDriveDataset(Dataset):
     def collate_fn(batch):
         img, label, paths, shapes,task = zip(*batch)
         print("coffate_fn 批次打包",task[0])
-        task = task [0]
 
         label_det, label_seg, label_depth = [], [], []
         has_det, has_seg, has_lane = False, False, False
@@ -823,32 +1047,46 @@ class AutoDriveDataset(Dataset):
 
             # if not label_det and not label_seg and not label_depth:
             #     print("读取错误===============", l_det, l_seg, l_depth)
-
-        img = torch.stack(img, 0)
-
-        task = task[0] if isinstance(task, list) else task
-        if task == 'detect':
+        if isinstance(img, tuple) and isinstance(img[0], list) and isinstance(img[0][0], torch.Tensor):
+            img1, img2, img3 = zip(*img)
+            #img = img.permute(1, 0, 2, 3, 4)
+            # img1 = img[0]  # shape: (4, 3, 380, 640)
+            # img2 = img[1]  # shape: (4, 3, 380, 640)
+            # img3 = img[2]  # shape: (4, 3, 380, 640)
+            img1 = torch.stack(img1, 0)
+            img2 = torch.stack(img2, 0)
+            img3 = torch.stack(img3, 0)
+            img = [img1,img2,img3]
             label_det = pad_sequence(label_det, batch_first=True, padding_value=0)
-        else:
-            label_det = None
-
-        if  task == 'seg' :
             label_seg = [torch.from_numpy(arr).long() for arr in label_seg]
-
             label_seg = torch.stack(label_seg, 0)
-        else:
-            label_seg = None
-
-        if  task == 'depth' :
-
             label_depth = torch.stack(label_depth, 0)
-        else:
-            label_depth = None
 
-        if (label_det is None or label_det.numel() == 0) and \
-                (label_seg is None or label_seg.numel() == 0) and \
-                (label_depth is None or label_depth.numel() == 0):
-            print("读取错误===============", label_det, label_seg, label_depth)
+        else:
+            task = task[0]
+            img = torch.stack(img,0)
+            task = task[0] if isinstance(task, list) else task
+            if task == 'detect':
+                label_det = pad_sequence(label_det, batch_first=True, padding_value=0)
+            else:
+                label_det = None
+
+            if  task == 'seg' :
+                label_seg = [torch.from_numpy(arr).long() for arr in label_seg]
+
+                label_seg = torch.stack(label_seg, 0)
+            else:
+                label_seg = None
+
+            if  task == 'depth' :
+
+                label_depth = torch.stack(label_depth, 0)
+            else:
+                label_depth = None
+            if (label_det is None or label_det.numel() == 0) and \
+                    (label_seg is None or label_seg.numel() == 0) and \
+                    (label_depth is None or label_depth.numel() == 0):
+                print("读取错误===============", label_det, label_seg, label_depth)
 
         #return img, [label_det, label_seg, label_lane], paths, shapes ,task
 

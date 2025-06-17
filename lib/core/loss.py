@@ -32,7 +32,7 @@ class MultiHeadLoss(nn.Module):
         self.lambdas = lambdas
         self.cfg = cfg
 
-    def forward(self, head_fields, head_targets, shapes, model, imgs):
+    def forward(self, head_fields, head_targets, shapes, model, imgs,task):
         """
         Inputs:
         - head_fields: (list) output from each task head
@@ -45,11 +45,11 @@ class MultiHeadLoss(nn.Module):
 
         """
 
-        total_loss, head_losses = self._forward_impl(head_fields, head_targets, shapes, model, imgs)
+        total_loss, head_losses = self._forward_impl(head_fields, head_targets, shapes, model, imgs,task)
 
         return total_loss, head_losses
 
-    def _forward_impl(self, predictions, targets, shapes, model, imgs):
+    def _forward_impl(self, predictions, targets, shapes, model, imgs,task):
         """
 
         Args:
@@ -78,11 +78,10 @@ class MultiHeadLoss(nn.Module):
         depth_loss = torch.tensor(0., device=device)
         ll_tversky_loss = torch.tensor(0., device=device)
 
-
-
+        task = task[0] if isinstance(task, list) else task
 
         # ComputeLossOTA
-        if targets[0] is not None:
+        if task == 'detect':
 
             det_all_loss = Det_loss(predictions[0], targets[0], imgs)
 
@@ -91,7 +90,7 @@ class MultiHeadLoss(nn.Module):
         # driving area BCE loss 
         # predictions[1] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
 
-        if targets[1] is not None :
+        if task == 'seg' :
         #     drive_area_seg_predicts = predictions[1].view(-1)
         # # target[1] = shape( B 2 H W ) , dim0=bg, dim1 = road
         #     drive_area_seg_targets = targets[1].view(-1)
@@ -103,7 +102,7 @@ class MultiHeadLoss(nn.Module):
             loss_fn = torch.nn.CrossEntropyLoss()
             da_seg_loss = loss_fn(predictions[1], targets[1])
 
-        if targets[2] is not None:
+        if task == 'depth':
             # lane line focal loss
             # predictions[2] = shape( B 2 H W ) ， 两个channel代表前景（1）与背景（0）
 
@@ -143,7 +142,6 @@ class MultiHeadLoss(nn.Module):
         # ll_tversky_loss *= 0.2 * self.lambdas[4]
 
         loss = det_all_loss + da_seg_loss + depth_loss
-        print(f"det_loss,{det_all_loss}",f"seg_Loss,{da_seg_loss}",f"depth_loss,{depth_loss}")
 
         return loss, (det_all_loss.item(), da_seg_loss.item(), depth_loss.item(), ll_tversky_loss.item(), loss.item()),
 

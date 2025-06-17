@@ -19,18 +19,19 @@ from torch.nn import Upsample
 from lib.utils import check_anchor_order
 from lib.core.evaluate import SegmentationMetric
 from lib.utils.utils import time_synchronized
-from lib.models.common import Conv, seg_head, PSA_p, MergeBlock, FPN_C2C12C131619
-from lib.models.common import Concat, FPN_C2, FPN_C3, FPN_C4, ELANNet, ELANBlock_Head, PaFPNELAN, IDetect, RepConv
+from lib.models.common import Conv, seg_head, PSA_p, MergeBlock, FPN_C2C12C131619, ResidualBlockSequence_DEPTH
+from lib.models.common import Concat, FPN_C2, FPN_C3, FPN_C4, ELANNet, ELANBlock_Head, PaFPNELAN, IDetect, RepConv,ResidualBlockSequence_DET,ResidualBlock
 # from lib.models.YOLOX_Head_scales import YOLOXHead
 from lib.models.YOLOX_Head_scales_noshare import YOLOXHead
 from bts.bts import bts
+
 
 # 修改
 # The lane line and the driving area segment branches without share information with each other and without link
 YOLOP = [
 ###### prediction head index
 # [2, 16, 28],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx no_use c2
-[2, 16, 18],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx use_c2
+[3, 18, 21],   #Det_out_idx, Da_Segout_idx, LL_Segout_idx use_c2
 
 ###### Backbone
 [ -1, ELANNet, [True]],   #0
@@ -38,47 +39,52 @@ YOLOP = [
 ###### PaFPNELAN
 [ -1, PaFPNELAN, []],   #1
 
+[ -1, ResidualBlockSequence_DET ,[[128,256,512]]], #2
+
+
 ###### Detect Head
-[ -1, YOLOXHead,  [4]], #2 #Detection head
+[ -1, YOLOXHead,  [4]], #3 #Detection head
 
 # ###### 渐进式上采样
-[ 1, FPN_C3, []],   #3
-[ 1, FPN_C4, []],   #4
+[ 1, FPN_C3, []],   #4
+[ 1, FPN_C4, []],   #5
 
 # segmentation head
-[ 4, Conv, [512, 256, 3, 1]],  
-[ -1, Upsample, [None, 2, 'bilinear']],  
-[ -1, ELANBlock_Head, [256, 128]],
-[ -1, Conv, [128, 64, 3, 1]], 
-[ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [64, 32, 3, 1]], 
-[ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [32, 16, 3, 1]], 
-[ -1, ELANBlock_Head, [16, 16]],
-[ -1, Upsample, [None, 2, 'bilinear']], 
-[ -1, Conv, [16, 8, 3, 1]],
-[ -1, seg_head, ['softmax']],  #16 segmentation head
+[ -1, ResidualBlock ,[512,512]], #6
+[ -1, Conv, [512, 256, 3, 1]],   #7
+[ -1, Upsample, [None, 2, 'bilinear']],  #8
+[ -1, ELANBlock_Head, [256, 128]], #9
+[ -1, Conv, [128, 64, 3, 1]],  #10
+[ -1, Upsample, [None, 2, 'bilinear']], #11
+[ -1, Conv, [64, 32, 3, 1]],  #12
+[ -1, Upsample, [None, 2, 'bilinear']], #13
+[ -1, Conv, [32, 16, 3, 1]],  #14
+[ -1, ELANBlock_Head, [16, 16]], #15
+[ -1, Upsample, [None, 2, 'bilinear']],  #16
+[ -1, Conv, [16, 8, 3, 1]], #17
+[ -1, seg_head, ['softmax']],  #18 segmentation head
 
 # # no use C2
 ###########
 # [ 3, Conv, [256, 128, 3, 1]],    #17
-# [ -1, Upsample, [None, 2, 'bilinear']],  
-# [ -1, ELANBlock_Head, [128, 64]], 
-# [ -1, PSA_p, [64, 64]], 
-# [ -1, Conv, [64, 32, 3, 1]], 
-# [ -1, Upsample, [None, 2, 'bilinear']], 
-# [ -1, Conv, [32, 16, 3, 1]], 
-# [ -1, ELANBlock_Head, [16, 8]], 
-# [ -1, PSA_p, [8, 8]], 
-# [ -1, Upsample, [None, 2, 'bilinear']], 
-# [ -1, Conv, [8, 2, 3, 1]], 
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ -1, ELANBlock_Head, [128, 64]],
+# [ -1, PSA_p, [64, 64]],
+# [ -1, Conv, [64, 32, 3, 1]],
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ -1, Conv, [32, 16, 3, 1]],
+# [ -1, ELANBlock_Head, [16, 8]],
+# [ -1, PSA_p, [8, 8]],
+# [ -1, Upsample, [None, 2, 'bilinear']],
+# [ -1, Conv, [8, 2, 3, 1]],
 # [ -1, seg_head, ['sigmoid']],  #28 segmentation head
 ###########
 
 # use C2
 ###########
-[1 ,FPN_C2C12C131619,[]], #17
-[-1 ,bts , [[64,256,256,256,512]] ]    #18
+[1 ,FPN_C2C12C131619,[]], #19
+[ -1, ResidualBlockSequence_DEPTH ,[[64,256,256,256,512]]],
+[-1 , bts , [[64,256,256,256,512]] ]    #21
 # [ 1, FPN_C2, []],  #17
 # [ -1, Conv, [256, 128, 3, 1]],    #18
 # # sum c2 and p3
@@ -201,12 +207,13 @@ class MCnet(nn.Module):
 
         # 定义各分支的范围
         backbone_neck_idx = [0, 1]
-        det_idx = [2]
-        da_seg_idx = list(range(3, 17))
-        ll_seg_idx = list(range(17, 19))
+        det_idx = [2,3]
+        da_seg_idx = list(range(4, 19))
+        ll_seg_idx = list(range(19, 22))
 
         # 决定本次 forward 要执行哪些层
-        task = task[0] if isinstance(task, list) else task
+        task = task[0] if isinstance(task, list)  else task
+        print("1111111111111",task)
 
         if task == 'detect':
             run_idx = backbone_neck_idx + det_idx
@@ -233,11 +240,11 @@ class MCnet(nn.Module):
             x = block(x_in)
 
             # 保存输出结果
-            if i == 2 and task == 'detect':
+            if i == 3 and task == 'detect':
                 det_out = x
-            if i == 16 and task == 'seg':
+            if i == 18 and task == 'seg':
                 seg_out = x
-            if i == 18 and task == 'depth':
+            if i == 21 and task == 'depth':
                 depth_out = x
 
             cache.append(x if block.index in self.save else None)
